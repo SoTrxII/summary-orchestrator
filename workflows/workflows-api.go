@@ -32,6 +32,10 @@ type EpisodeInput struct {
 	EpisodeId int `json:"episodeId" binding:"required"`
 	// One-shots have no campaign narrative to update.
 	IsOneShot bool `json:"isOneShot"`
+	// Id of a whisper task that has already run. Optional: set it to skip
+	// transcribing again and collect that task's result instead, which is
+	// what makes re-running a failed late step affordable.
+	TranscriptionId string `json:"transcriptionId"`
 	// Key of the cooked audio in the recordings bucket.
 	AudioKey string `json:"audioKey" binding:"required"`
 }
@@ -149,4 +153,9 @@ var gistRetry = &workflow.RetryPolicy{
 // noRetry is for the one step that must not run twice: writing the episode
 // summary also stores it in the knowledge graph, and Graphiti will happily
 // accept the same episode a second time.
-var noRetry = &workflow.RetryPolicy{MaxAttempts: 1}
+//
+// InitialRetryInterval is set even though MaxAttempts is 1 and no second
+// attempt can happen: the runtime validates the whole policy before running
+// the activity and rejects a zero interval outright, which fails the step for
+// a reason that has nothing to do with its work.
+var noRetry = &workflow.RetryPolicy{MaxAttempts: 1, InitialRetryInterval: 1 * time.Second}

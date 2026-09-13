@@ -26,25 +26,32 @@ func SummarizeEpisode(ctx *workflow.WorkflowContext) (any, error) {
 	}
 	log(fmt.Sprintf("starting for campaign %d, episode %d", in.CampaignId, in.EpisodeId))
 
-	// 1. Hand whisper a URL rather than the bytes.
-	var audioUrl string
-	if err := ctx.CallActivity(PresignAudio,
-		workflow.WithActivityInput(in),
-		workflow.WithActivityRetryPolicy(transientRetry),
-	).Await(&audioUrl); err != nil {
-		return nil, fmt.Errorf("presigning audio: %w", err)
-	}
+	// 1-2. Queue the transcription, then wait it out. Whisper is asynchronous,
+	// so this is two steps: one to enqueue, one to collect. Transcribing a
+	// session takes hours, so a caller holding the id of a task that already
+	// ran can skip straight to collecting it — that is the difference between
+	// minutes and half a day when a later step has to be re-run.
+	taskId := in.TranscriptionId
+	if taskId == "" {
+		// Hand whisper a URL rather than the bytes.
+		var audioUrl string
+		if err := ctx.CallActivity(PresignAudio,
+			workflow.WithActivityInput(in),
+			workflow.WithActivityRetryPolicy(transientRetry),
+		).Await(&audioUrl); err != nil {
+			return nil, fmt.Errorf("presigning audio: %w", err)
+		}
 
-	// 2. Queue the transcription, then wait it out. Whisper is asynchronous,
-	// so this is two steps: one to enqueue, one to collect.
-	var taskId string
-	if err := ctx.CallActivity(StartTranscription,
-		workflow.WithActivityInput(transcriptionRequest{AudioUrl: audioUrl}),
-		workflow.WithActivityRetryPolicy(transientRetry),
-	).Await(&taskId); err != nil {
-		return nil, fmt.Errorf("queueing transcription: %w", err)
+		if err := ctx.CallActivity(StartTranscription,
+			workflow.WithActivityInput(transcriptionRequest{AudioUrl: audioUrl}),
+			workflow.WithActivityRetryPolicy(transientRetry),
+		).Await(&taskId); err != nil {
+			return nil, fmt.Errorf("queueing transcription: %w", err)
+		}
+		log("transcription queued as " + taskId)
+	} else {
+		log("reusing existing transcription " + taskId)
 	}
-	log("transcription queued as " + taskId)
 
 	var lines []storyteller.Line
 	if err := ctx.CallActivity(FetchTranscription,
