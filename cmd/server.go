@@ -55,14 +55,21 @@ func main() {
 
 	registry := workflow.NewRegistry()
 	err = workflows.Register(registry, workflows.Deps{
-		Audio:       audio_store.New(cfg.ObjectStore, cfg.PresignTTL, daprClient),
-		Transcriber: transcriber.New(cfg.WhisperUrl, cfg.WhisperToken, cfg.WhisperLanguage, cfg.WhisperModel, &http.Client{Timeout: whisperTimeout}),
-		Agent:       storyteller.New(cfg.AgentEndpoint(), cfg.GatewayKey, cfg.StorytellerAgent, cfg.StorytellerViaGateway, &http.Client{Timeout: agentTimeout}),
-		Summaries:   summary_store.New(cfg.SummaryStore, daprClient),
-		Sessions:    session_lookup.New(cfg.Db, daprClient),
-		Publisher:   daprClient,
-		PubSubName:  cfg.PubSub,
-		GistTopic:   cfg.GistTopic,
+		Audio: audio_store.New(cfg.ObjectStore, cfg.PresignTTL, daprClient),
+		Transcriber: transcriber.New(transcriber.Config{
+			BaseUrl:     cfg.WhisperUrl,
+			Token:       cfg.WhisperToken,
+			Language:    cfg.WhisperLanguage,
+			Model:       cfg.WhisperModel,
+			Device:      cfg.WhisperDevice,
+			ComputeType: cfg.WhisperComputeType,
+		}, &http.Client{Timeout: whisperTimeout}),
+		Agent:      storyteller.New(cfg.AgentEndpoint(), cfg.GatewayKey, cfg.StorytellerAgent, cfg.StorytellerViaGateway, &http.Client{Timeout: agentTimeout}),
+		Summaries:  summary_store.New(cfg.SummaryStore, daprClient),
+		Sessions:   session_lookup.New(cfg.Db, daprClient),
+		Publisher:  daprClient,
+		PubSubName: cfg.PubSub,
+		GistTopic:  cfg.GistTopic,
 	})
 	if err != nil {
 		slog.Error(fmt.Sprintf("[Main] :: could not register the workflow : %s", err))

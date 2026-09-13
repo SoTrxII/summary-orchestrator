@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -15,7 +16,14 @@ func serving(t *testing.T, status int, body string) *WhisperX {
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(srv.Close)
-	return New(srv.URL, "token", "fr", "", srv.Client())
+	return New(Config{
+		BaseUrl:     srv.URL,
+		Token:       "token",
+		Language:    "fr",
+		Model:       "big-model",
+		Device:      "cpu",
+		ComputeType: "int8",
+	}, srv.Client())
 }
 
 func TestResultStillRunning(t *testing.T) {
@@ -78,5 +86,43 @@ func TestStartPropagatesHttpErrors(t *testing.T) {
 	w := serving(t, 422, `{"detail":"bad url"}`)
 	if _, err := w.Start(context.Background(), "nope"); err == nil {
 		t.Fatal("expected an error on a 422")
+	}
+}
+
+// /speech-to-text-url takes the model, device and compute type from query
+// parameters whose schema defaults are "tiny", "cuda" and "float16" — it does
+// not read the server's own WHISPER_MODEL/DEVICE/COMPUTE_TYPE environment.
+// Dropping any of them runs a job the deployment was never configured for,
+// and on a CPU-only server the task dies with a CUDA driver error well after
+// the request has already been answered 200.
+func TestStartSendsEveryModelParameter(t *testing.T) {
+	var query url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.Query()
+		_, _ = w.Write([]byte(`{"identifier":"task-1"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	w := New(Config{
+		BaseUrl:     srv.URL,
+		Language:    "fr",
+		Model:       "big-model",
+		Device:      "cpu",
+		ComputeType: "int8",
+	}, srv.Client())
+
+	if _, err := w.Start(context.Background(), "http://minio/recordings/a.ogg"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for param, want := range map[string]string{
+		"language":     "fr",
+		"model":        "big-model",
+		"device":       "cpu",
+		"compute_type": "int8",
+		"diarize":      "true",
+	} {
+		if got := query.Get(param); got != want {
+			t.Errorf("query %s = %q, want %q", param, got, want)
+		}
 	}
 }

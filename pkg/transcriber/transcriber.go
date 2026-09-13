@@ -10,30 +10,38 @@ import (
 	"strings"
 )
 
+// Config describes the whisperX deployment and how to run a job on it.
+//
+// Everything here has to be sent on every request. /speech-to-text-url reads
+// these from query parameters whose defaults are hardcoded in the API schema
+// — "en", "tiny", "cuda", "float16" — and does *not* fall back to the server's
+// own DEFAULT_LANG/WHISPER_MODEL/DEVICE/COMPUTE_TYPE environment. Omitting any
+// of them silently runs a job the deployment was never configured for: on a
+// CPU-only server, omitting Device fails the task outright with "CUDA driver
+// version is insufficient for CUDA runtime version".
+type Config struct {
+	BaseUrl  string
+	Token    string
+	Language string
+	Model    string
+	// "cpu" or "cuda".
+	Device string
+	// Must be "int8" when Device is "cpu"; float16 is GPU-only.
+	ComputeType string
+}
+
 // WhisperX talks to a whisperX-FastAPI deployment.
 type WhisperX struct {
-	baseUrl string
-	token   string
-	// Language the audio is in. Passed explicitly: the API's own default is
-	// "en" regardless of the server's DEFAULT_LANG.
-	language string
-	// Optional model override. Empty means "whatever the server is
-	// configured with", which is the normal case.
-	model  string
+	cfg    Config
 	client *http.Client
 }
 
-func New(baseUrl, token, language, model string, client *http.Client) *WhisperX {
+func New(cfg Config, client *http.Client) *WhisperX {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &WhisperX{
-		baseUrl:  strings.TrimSuffix(baseUrl, "/"),
-		token:    token,
-		language: language,
-		model:    model,
-		client:   client,
-	}
+	cfg.BaseUrl = strings.TrimSuffix(cfg.BaseUrl, "/")
+	return &WhisperX{cfg: cfg, client: client}
 }
 
 type startResponse struct {
@@ -43,18 +51,18 @@ type startResponse struct {
 
 func (w *WhisperX) Start(ctx context.Context, audioUrl string) (string, error) {
 	// The endpoint takes the audio location as a form field and everything
-	// else as query parameters.
+	// else as query parameters. See Config: none of these may be omitted.
 	q := url.Values{}
-	q.Set("language", w.language)
+	q.Set("language", w.cfg.Language)
 	q.Set("diarize", "true")
-	if w.model != "" {
-		q.Set("model", w.model)
-	}
+	q.Set("model", w.cfg.Model)
+	q.Set("device", w.cfg.Device)
+	q.Set("compute_type", w.cfg.ComputeType)
 
 	body := url.Values{}
 	body.Set("url", audioUrl)
 
-	endpoint := fmt.Sprintf("%s/speech-to-text-url?%s", w.baseUrl, q.Encode())
+	endpoint := fmt.Sprintf("%s/speech-to-text-url?%s", w.cfg.BaseUrl, q.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body.Encode()))
 	if err != nil {
 		return "", err
@@ -81,7 +89,7 @@ type taskResult struct {
 }
 
 func (w *WhisperX) Result(ctx context.Context, taskId string) ([]Segment, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/task/%s", w.baseUrl, taskId), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/task/%s", w.cfg.BaseUrl, taskId), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -108,8 +116,8 @@ func (w *WhisperX) Result(ctx context.Context, taskId string) ([]Segment, error)
 }
 
 func (w *WhisperX) authorize(req *http.Request) {
-	if w.token != "" {
-		req.Header.Set("Authorization", "Bearer "+w.token)
+	if w.cfg.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+w.cfg.Token)
 	}
 }
 

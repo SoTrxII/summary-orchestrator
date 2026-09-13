@@ -17,6 +17,14 @@ const (
 
 	DefaultWhisperUrl      = "http://whisper:8000"
 	DefaultWhisperLanguage = "fr"
+	// /speech-to-text-url ignores the server's own WHISPER_MODEL, DEVICE and
+	// COMPUTE_TYPE env vars and reads them from query parameters instead,
+	// defaulting to "tiny"/"cuda"/"float16". These have to match how the
+	// deployment is actually configured or the task fails on a CPU-only
+	// server — see transcriber.Config.
+	DefaultWhisperModel       = "nyrahealth/faster_CrisperWhisper"
+	DefaultWhisperDevice      = "cpu"
+	DefaultWhisperComputeType = "int8"
 
 	DefaultStorytellerUrl   = "http://storyteller:9999"
 	DefaultGatewayUrl       = "http://ai-gateway.private:4000"
@@ -46,10 +54,11 @@ type Config struct {
 	WhisperUrl      string
 	WhisperToken    string
 	WhisperLanguage string
-	// Optional. Left empty, the server picks the model from its own
-	// WHISPER_MODEL env var, which is how the cluster deployment is
-	// configured. Only set this to override on a per-request basis.
-	WhisperModel string
+	// Sent on every request rather than left to the server. The endpoint's
+	// own defaults are "tiny"/"cuda"/"float16", not the deployment's env.
+	WhisperModel       string
+	WhisperDevice      string
+	WhisperComputeType string
 
 	// The Storyteller agent, reached directly by default. It answers
 	// JSON-RPC on "/" of this address.
@@ -75,21 +84,24 @@ type Config struct {
 
 func Parse() *Config {
 	c := &Config{
-		AppPort:          DefaultAppPort,
-		DaprGrpcPort:     DefaultDaprGrpcPort,
-		ObjectStore:      DefaultObjectStore,
-		SummaryStore:     DefaultSummaryStore,
-		Db:               DefaultDb,
-		PubSub:           DefaultPubSub,
-		GistTopic:        DefaultGistTopic,
-		WhisperUrl:       DefaultWhisperUrl,
-		WhisperLanguage:  DefaultWhisperLanguage,
-		StorytellerUrl:   DefaultStorytellerUrl,
-		GatewayUrl:       DefaultGatewayUrl,
-		StorytellerAgent: DefaultStorytellerAgent,
-		PresignTTL:       DefaultPresignTTL,
-		ServiceName:      DefaultServiceName,
-		ServiceVersion:   DefaultServiceVersion,
+		AppPort:            DefaultAppPort,
+		DaprGrpcPort:       DefaultDaprGrpcPort,
+		ObjectStore:        DefaultObjectStore,
+		SummaryStore:       DefaultSummaryStore,
+		Db:                 DefaultDb,
+		PubSub:             DefaultPubSub,
+		GistTopic:          DefaultGistTopic,
+		WhisperUrl:         DefaultWhisperUrl,
+		WhisperLanguage:    DefaultWhisperLanguage,
+		WhisperModel:       DefaultWhisperModel,
+		WhisperDevice:      DefaultWhisperDevice,
+		WhisperComputeType: DefaultWhisperComputeType,
+		StorytellerUrl:     DefaultStorytellerUrl,
+		GatewayUrl:         DefaultGatewayUrl,
+		StorytellerAgent:   DefaultStorytellerAgent,
+		PresignTTL:         DefaultPresignTTL,
+		ServiceName:        DefaultServiceName,
+		ServiceVersion:     DefaultServiceVersion,
 	}
 
 	intEnv("APP_PORT", &c.AppPort)
@@ -105,6 +117,8 @@ func Parse() *Config {
 	strEnv("WHISPER_BEARER_TOKEN", &c.WhisperToken)
 	strEnv("WHISPER_LANGUAGE", &c.WhisperLanguage)
 	strEnv("WHISPER_MODEL", &c.WhisperModel)
+	strEnv("WHISPER_DEVICE", &c.WhisperDevice)
+	strEnv("WHISPER_COMPUTE_TYPE", &c.WhisperComputeType)
 
 	strEnv("STORYTELLER_URL", &c.StorytellerUrl)
 	boolEnv("STORYTELLER_VIA_GATEWAY", &c.StorytellerViaGateway)
