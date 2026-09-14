@@ -3,6 +3,7 @@ package workflows
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"summary-orchestrator/pkg/storyteller"
 
@@ -28,37 +29,57 @@ func SummarizeEpisode(ctx *workflow.WorkflowContext) (any, error) {
 
 	// 1-2. Queue the transcription, then wait it out. Whisper is asynchronous,
 	// so this is two steps: one to enqueue, one to collect. Transcribing a
-	// session takes hours, so a caller holding the id of a task that already
-	// ran can skip straight to collecting it — that is the difference between
-	// minutes and half a day when a later step has to be re-run.
-	taskId := in.TranscriptionId
-	if taskId == "" {
-		// Hand whisper a URL rather than the bytes.
-		var audioUrl string
-		if err := ctx.CallActivity(PresignAudio,
-			workflow.WithActivityInput(in),
-			workflow.WithActivityRetryPolicy(transientRetry),
-		).Await(&audioUrl); err != nil {
-			return nil, fmt.Errorf("presigning audio: %w", err)
-		}
+	// session takes hours, so a caller holding the ids of tasks that already
+	// ran can skip straight to collecting them — that is the difference
+	// between minutes and half a day when a later step has to be re-run.
+	//
+	// A recording that dropped and resumed arrives as several chunks. Each is
+	// a separate whisper job; they are all queued before any is collected, so
+	// they sit in whisper's queue back to back instead of waiting on a round
+	// trip through here between them.
+	keys := in.Keys()
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("no audio to summarize")
+	}
+	taskIds := in.Tasks()
+	if len(taskIds) == 0 {
+		for _, key := range keys {
+			// Hand whisper a URL rather than the bytes.
+			var audioUrl string
+			if err := ctx.CallActivity(PresignAudio,
+				workflow.WithActivityInput(presignRequest{Key: key}),
+				workflow.WithActivityRetryPolicy(transientRetry),
+			).Await(&audioUrl); err != nil {
+				return nil, fmt.Errorf("presigning %s: %w", key, err)
+			}
 
-		if err := ctx.CallActivity(StartTranscription,
-			workflow.WithActivityInput(transcriptionRequest{AudioUrl: audioUrl}),
-			workflow.WithActivityRetryPolicy(transientRetry),
-		).Await(&taskId); err != nil {
-			return nil, fmt.Errorf("queueing transcription: %w", err)
+			var taskId string
+			if err := ctx.CallActivity(StartTranscription,
+				workflow.WithActivityInput(transcriptionRequest{AudioUrl: audioUrl}),
+				workflow.WithActivityRetryPolicy(transientRetry),
+			).Await(&taskId); err != nil {
+				return nil, fmt.Errorf("queueing transcription of %s: %w", key, err)
+			}
+			taskIds = append(taskIds, taskId)
+			log(fmt.Sprintf("%s queued for transcription as %s", key, taskId))
 		}
-		log("transcription queued as " + taskId)
 	} else {
-		log("reusing existing transcription " + taskId)
+		log(fmt.Sprintf("reusing %d existing transcription(s): %s", len(taskIds), strings.Join(taskIds, ", ")))
 	}
 
+	// Collected in order: the chunks are consecutive in time, so the
+	// concatenated transcript has to follow the same order to read as one
+	// session rather than a shuffled one.
 	var lines []storyteller.Line
-	if err := ctx.CallActivity(FetchTranscription,
-		workflow.WithActivityInput(transcriptionResult{TaskId: taskId}),
-		workflow.WithActivityRetryPolicy(transcriptionRetry),
-	).Await(&lines); err != nil {
-		return nil, fmt.Errorf("transcribing: %w", err)
+	for _, taskId := range taskIds {
+		var chunk []storyteller.Line
+		if err := ctx.CallActivity(FetchTranscription,
+			workflow.WithActivityInput(transcriptionResult{TaskId: taskId}),
+			workflow.WithActivityRetryPolicy(transcriptionRetry),
+		).Await(&chunk); err != nil {
+			return nil, fmt.Errorf("transcribing task %s: %w", taskId, err)
+		}
+		lines = append(lines, chunk...)
 	}
 	log(fmt.Sprintf("transcribed into %d lines", len(lines)))
 

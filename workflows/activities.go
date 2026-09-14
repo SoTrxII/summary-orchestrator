@@ -12,6 +12,10 @@ import (
 	"github.com/dapr/durabletask-go/workflow"
 )
 
+type presignRequest struct {
+	Key string `json:"key"`
+}
+
 type transcriptionRequest struct {
 	AudioUrl string `json:"audioUrl"`
 }
@@ -53,11 +57,11 @@ type publishRequest struct {
 
 // PresignAudio turns a cooked audio key into a URL whisper can fetch itself.
 func PresignAudio(ctx workflow.ActivityContext) (any, error) {
-	var in EpisodeInput
+	var in presignRequest
 	if err := ctx.GetInput(&in); err != nil {
 		return nil, err
 	}
-	return deps.Audio.PresignedUrl(ctx.Context(), in.AudioKey)
+	return deps.Audio.PresignedUrl(ctx.Context(), in.Key)
 }
 
 // StartTranscription queues the work and returns whisper's task id.

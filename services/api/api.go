@@ -47,6 +47,10 @@ func (c *Controller) StartEpisode(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if len(in.Keys()) == 0 {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "audioKey or audioKeys is required"})
+		return
+	}
 	if in.JobId == "" {
 		in.JobId = uuid.NewString()
 	}

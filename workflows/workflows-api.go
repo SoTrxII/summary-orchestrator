@@ -32,12 +32,48 @@ type EpisodeInput struct {
 	EpisodeId int `json:"episodeId" binding:"required"`
 	// One-shots have no campaign narrative to update.
 	IsOneShot bool `json:"isOneShot"`
-	// Id of a whisper task that has already run. Optional: set it to skip
-	// transcribing again and collect that task's result instead, which is
-	// what makes re-running a failed late step affordable.
+	// Ids of whisper tasks that have already run, in the same order as the
+	// keys they came from. Optional: set them to skip transcribing again and
+	// collect those tasks' results instead, which is what makes re-running a
+	// failed late step affordable rather than another half-day of CPU.
+	TranscriptionIds []string `json:"transcriptionIds"`
+	// Single-task form of TranscriptionIds, for the common one-chunk case.
 	TranscriptionId string `json:"transcriptionId"`
-	// Key of the cooked audio in the recordings bucket.
-	AudioKey string `json:"audioKey" binding:"required"`
+	// Keys of the cooked audio in the recordings bucket, in recording order.
+	//
+	// There is usually one, but not always: Pandora opens a new record every
+	// time it reconnects to the voice channel, so a session that dropped
+	// comes back as consecutive chunks. They are transcribed in turn and the
+	// transcripts concatenated, which is why the order matters.
+	AudioKeys []string `json:"audioKeys"`
+	// Single-key form of AudioKeys.
+	AudioKey string `json:"audioKey"`
+}
+
+// Keys is the recording, whichever form the caller expressed it in. The
+// singular field comes last so that a caller setting both gets the plural
+// one first, which is the one that can describe a split recording.
+func (e EpisodeInput) Keys() []string {
+	return oneOrMany(e.AudioKeys, e.AudioKey)
+}
+
+// Tasks are the whisper tasks to collect instead of starting new ones. Empty
+// means transcribe from scratch.
+func (e EpisodeInput) Tasks() []string {
+	return oneOrMany(e.TranscriptionIds, e.TranscriptionId)
+}
+
+func oneOrMany(many []string, one string) []string {
+	out := make([]string, 0, len(many)+1)
+	for _, v := range many {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	if one != "" {
+		out = append(out, one)
+	}
+	return out
 }
 
 func (e EpisodeInput) campaign() string { return strconv.Itoa(e.CampaignId) }
