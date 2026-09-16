@@ -33,6 +33,13 @@ func EpisodeKey(campaignId, episodeId string) string {
 	return fmt.Sprintf("campaigns/%s/episodes/%s/summary.json", campaignId, episodeId)
 }
 
+// TranscriptKey is where an episode's transcript is archived. It sits beside
+// the summary written from it rather than in a bucket of its own, so the whole
+// of what is known about an episode is under one prefix.
+func TranscriptKey(campaignId, episodeId string) string {
+	return fmt.Sprintf("campaigns/%s/episodes/%s/transcript.json", campaignId, episodeId)
+}
+
 func (s *DaprSummaryStore) CampaignKey(campaignId string) string {
 	return fmt.Sprintf("campaigns/%s/summary.json", campaignId)
 }
@@ -54,12 +61,32 @@ func (s *DaprSummaryStore) SaveCampaign(ctx context.Context, campaignId, summary
 	})
 }
 
+// SaveTranscript archives a transcript. Unlike the summaries it does not go
+// through save: the payload is a different shape, and a transcript is large
+// enough that copying it into another struct to reuse one function is a poor
+// trade.
+func (s *DaprSummaryStore) SaveTranscript(ctx context.Context, t Transcript) (string, error) {
+	key := TranscriptKey(t.CampaignId, t.EpisodeId)
+	data, err := json.Marshal(t)
+	if err != nil {
+		return "", err
+	}
+	if err := s.put(ctx, key, data); err != nil {
+		return "", err
+	}
+	return key, nil
+}
+
 func (s *DaprSummaryStore) save(ctx context.Context, key string, payload storedSummary) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	_, err = s.client.InvokeBinding(ctx, &client.InvokeBindingRequest{
+	return s.put(ctx, key, data)
+}
+
+func (s *DaprSummaryStore) put(ctx context.Context, key string, data []byte) error {
+	_, err := s.client.InvokeBinding(ctx, &client.InvokeBindingRequest{
 		Name:      s.componentName,
 		Operation: "create",
 		Data:      data,

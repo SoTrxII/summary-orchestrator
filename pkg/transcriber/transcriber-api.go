@@ -23,7 +23,10 @@ type Segment struct {
 // returns immediately, Result reports on it.
 type Transcriber interface {
 	// Start queues the transcription of an audio file reachable at audioUrl.
-	Start(ctx context.Context, audioUrl string) (taskId string, err error)
+	//
+	// maxSpeakers caps how many voices diarization is allowed to find. Pass 0
+	// when that is unknown and it will be left to guess.
+	Start(ctx context.Context, audioUrl string, maxSpeakers int) (taskId string, err error)
 	// Result returns the diarized segments, or ErrStillRunning.
 	Result(ctx context.Context, taskId string) ([]Segment, error)
 }

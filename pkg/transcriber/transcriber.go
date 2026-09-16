@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -49,7 +50,7 @@ type startResponse struct {
 	Message    string `json:"message"`
 }
 
-func (w *WhisperX) Start(ctx context.Context, audioUrl string) (string, error) {
+func (w *WhisperX) Start(ctx context.Context, audioUrl string, maxSpeakers int) (string, error) {
 	// The endpoint takes the audio location as a form field and everything
 	// else as query parameters. See Config: none of these may be omitted.
 	q := url.Values{}
@@ -58,6 +59,17 @@ func (w *WhisperX) Start(ctx context.Context, audioUrl string) (string, error) {
 	q.Set("model", w.cfg.Model)
 	q.Set("device", w.cfg.Device)
 	q.Set("compute_type", w.cfg.ComputeType)
+
+	// Telling diarization how many voices it may find keeps it from inventing
+	// extras: a seven-person session left unbounded came back with eight
+	// speakers, one of them holding 17 lines out of 1177.
+	//
+	// Only the ceiling is sent. The roster this comes from counts everyone who
+	// joined the channel, and the quiet ones never reach the audio, so it is a
+	// sound upper bound and a bad lower one.
+	if maxSpeakers > 0 {
+		q.Set("max_speakers", strconv.Itoa(maxSpeakers))
+	}
 
 	body := url.Values{}
 	body.Set("url", audioUrl)

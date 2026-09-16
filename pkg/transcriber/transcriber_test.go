@@ -73,7 +73,7 @@ func TestResultCompletedButEmpty(t *testing.T) {
 
 func TestStartReturnsIdentifier(t *testing.T) {
 	w := serving(t, 200, `{"identifier":"task-1","message":"Task queued"}`)
-	id, err := w.Start(context.Background(), "http://minio/recordings/a.ogg")
+	id, err := w.Start(context.Background(), "http://minio/recordings/a.ogg", 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestStartReturnsIdentifier(t *testing.T) {
 
 func TestStartPropagatesHttpErrors(t *testing.T) {
 	w := serving(t, 422, `{"detail":"bad url"}`)
-	if _, err := w.Start(context.Background(), "nope"); err == nil {
+	if _, err := w.Start(context.Background(), "nope", 0); err == nil {
 		t.Fatal("expected an error on a 422")
 	}
 }
@@ -111,7 +111,7 @@ func TestStartSendsEveryModelParameter(t *testing.T) {
 		ComputeType: "int8",
 	}, srv.Client())
 
-	if _, err := w.Start(context.Background(), "http://minio/recordings/a.ogg"); err != nil {
+	if _, err := w.Start(context.Background(), "http://minio/recordings/a.ogg", 0); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for param, want := range map[string]string{
@@ -124,5 +124,38 @@ func TestStartSendsEveryModelParameter(t *testing.T) {
 		if got := query.Get(param); got != want {
 			t.Errorf("query %s = %q, want %q", param, got, want)
 		}
+	}
+}
+
+// Diarization left to itself over-segments: a seven-person session came back
+// with eight speakers. The ceiling is only sent when it is actually known —
+// a recording archived without its roster must still be transcribed, and
+// max_speakers=0 would be a claim that nobody spoke.
+func TestStartSendsSpeakerCeilingOnlyWhenKnown(t *testing.T) {
+	var query url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.Query()
+		_, _ = w.Write([]byte(`{"identifier":"task-1"}`))
+	}))
+	t.Cleanup(srv.Close)
+	w := New(Config{BaseUrl: srv.URL, Language: "fr", Model: "m", Device: "cpu", ComputeType: "int8"}, srv.Client())
+
+	if _, err := w.Start(context.Background(), "http://minio/a.ogg", 7); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := query.Get("max_speakers"); got != "7" {
+		t.Errorf("max_speakers = %q, want 7", got)
+	}
+	// A ceiling is never a floor: the roster counts people who joined, and the
+	// silent ones leave nothing to diarize.
+	if query.Has("min_speakers") {
+		t.Errorf("min_speakers must not be sent, got %q", query.Get("min_speakers"))
+	}
+
+	if _, err := w.Start(context.Background(), "http://minio/a.ogg", 0); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if query.Has("max_speakers") {
+		t.Errorf("an unknown ceiling must be omitted, got %q", query.Get("max_speakers"))
 	}
 }

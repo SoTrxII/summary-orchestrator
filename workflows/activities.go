@@ -3,10 +3,12 @@ package workflows
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	session_lookup "summary-orchestrator/pkg/session-lookup"
 	"summary-orchestrator/pkg/storyteller"
+	summary_store "summary-orchestrator/pkg/summary-store"
 	"summary-orchestrator/pkg/transcriber"
 
 	"github.com/dapr/durabletask-go/workflow"
@@ -18,6 +20,16 @@ type presignRequest struct {
 
 type transcriptionRequest struct {
 	AudioUrl string `json:"audioUrl"`
+	// 0 when the recording came without a roster to count.
+	MaxSpeakers int `json:"maxSpeakers"`
+}
+
+type transcriptRequest struct {
+	CampaignId       string             `json:"campaignId"`
+	EpisodeId        string             `json:"episodeId"`
+	AudioKeys        []string           `json:"audioKeys"`
+	TranscriptionIds []string           `json:"transcriptionIds"`
+	Lines            []storyteller.Line `json:"lines"`
 }
 
 type transcriptionResult struct {
@@ -64,13 +76,48 @@ func PresignAudio(ctx workflow.ActivityContext) (any, error) {
 	return deps.Audio.PresignedUrl(ctx.Context(), in.Key)
 }
 
+// CountSpeakers reads how many people were in the voice channel, so that
+// diarization can be told what it is looking at.
+//
+// It never fails the workflow. A recording with no roster — anything archived
+// before Pandora wrote one — is transcribed unbounded, exactly as it was
+// before; a worse guess is not worth losing hours of transcription over.
+func CountSpeakers(ctx workflow.ActivityContext) (any, error) {
+	var in presignRequest
+	if err := ctx.GetInput(&in); err != nil {
+		return nil, err
+	}
+
+	people, err := deps.Audio.SpeakerCount(ctx.Context(), in.Key)
+	if err != nil {
+		slog.Info(fmt.Sprintf("[CountSpeakers] :: no roster for %s, diarizing unbounded: %s", in.Key, err))
+		return 0, nil
+	}
+	return people, nil
+}
+
 // StartTranscription queues the work and returns whisper's task id.
 func StartTranscription(ctx workflow.ActivityContext) (any, error) {
 	var in transcriptionRequest
 	if err := ctx.GetInput(&in); err != nil {
 		return nil, err
 	}
-	return deps.Transcriber.Start(ctx.Context(), in.AudioUrl)
+	return deps.Transcriber.Start(ctx.Context(), in.AudioUrl, in.MaxSpeakers)
+}
+
+// StoreTranscript archives the transcript the summary will be written from.
+func StoreTranscript(ctx workflow.ActivityContext) (any, error) {
+	var in transcriptRequest
+	if err := ctx.GetInput(&in); err != nil {
+		return nil, err
+	}
+	return deps.Summaries.SaveTranscript(ctx.Context(), summary_store.Transcript{
+		CampaignId:       in.CampaignId,
+		EpisodeId:        in.EpisodeId,
+		AudioKeys:        in.AudioKeys,
+		TranscriptionIds: in.TranscriptionIds,
+		Lines:            in.Lines,
+	})
 }
 
 // FetchTranscription collects the diarized transcript, or reports that it is

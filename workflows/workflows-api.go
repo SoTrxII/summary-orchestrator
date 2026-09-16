@@ -114,8 +114,10 @@ func Register(r *workflow.Registry, d Deps) error {
 	}
 	activities := []workflow.Activity{
 		PresignAudio,
+		CountSpeakers,
 		StartTranscription,
 		FetchTranscription,
+		StoreTranscript,
 		WriteEpisodeSummary,
 		StoreEpisodeSummary,
 		WriteCampaignSummary,

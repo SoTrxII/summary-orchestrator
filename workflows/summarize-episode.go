@@ -53,15 +53,30 @@ func SummarizeEpisode(ctx *workflow.WorkflowContext) (any, error) {
 				return nil, fmt.Errorf("presigning %s: %w", key, err)
 			}
 
+			// Tell diarization how many voices it may find. Unbounded, it
+			// invents speakers that were never in the room, and a chapter
+			// written from a transcript with a phantom in it reads like one.
+			var maxSpeakers int
+			if err := ctx.CallActivity(CountSpeakers,
+				workflow.WithActivityInput(presignRequest{Key: key}),
+				workflow.WithActivityRetryPolicy(transientRetry),
+			).Await(&maxSpeakers); err != nil {
+				return nil, fmt.Errorf("counting speakers of %s: %w", key, err)
+			}
+
 			var taskId string
 			if err := ctx.CallActivity(StartTranscription,
-				workflow.WithActivityInput(transcriptionRequest{AudioUrl: audioUrl}),
+				workflow.WithActivityInput(transcriptionRequest{
+					AudioUrl:    audioUrl,
+					MaxSpeakers: maxSpeakers,
+				}),
 				workflow.WithActivityRetryPolicy(transientRetry),
 			).Await(&taskId); err != nil {
 				return nil, fmt.Errorf("queueing transcription of %s: %w", key, err)
 			}
 			taskIds = append(taskIds, taskId)
-			log(fmt.Sprintf("%s queued for transcription as %s", key, taskId))
+			log(fmt.Sprintf("%s queued for transcription as %s (at most %d speakers)",
+				key, taskId, maxSpeakers))
 		}
 	} else {
 		log(fmt.Sprintf("reusing %d existing transcription(s): %s", len(taskIds), strings.Join(taskIds, ", ")))
@@ -82,6 +97,32 @@ func SummarizeEpisode(ctx *workflow.WorkflowContext) (any, error) {
 		lines = append(lines, chunk...)
 	}
 	log(fmt.Sprintf("transcribed into %d lines", len(lines)))
+
+	// Archive the transcript before anything is written from it.
+	//
+	// This is the expensive half of the workflow — hours of CPU against
+	// minutes for every step after it — and whisper's own task table was until
+	// now the only copy, on one node's disk, reachable only through its API.
+	// Kept here, re-summarizing an episode with a different prompt or model
+	// costs minutes.
+	//
+	// A failure to archive is logged and swallowed: the transcript is already
+	// in hand, and the summary is worth more than the copy of its source.
+	var transcriptKey string
+	if err := ctx.CallActivity(StoreTranscript,
+		workflow.WithActivityInput(transcriptRequest{
+			CampaignId:       in.campaign(),
+			EpisodeId:        in.episode(),
+			AudioKeys:        keys,
+			TranscriptionIds: taskIds,
+			Lines:            lines,
+		}),
+		workflow.WithActivityRetryPolicy(transientRetry),
+	).Await(&transcriptKey); err != nil {
+		log(fmt.Sprintf("could not archive the transcript: %s", err))
+	} else {
+		log(fmt.Sprintf("transcript archived at %s", transcriptKey))
+	}
 
 	// 3. The agent writes the chapter and stores it in the knowledge graph.
 	var episodeSummary string

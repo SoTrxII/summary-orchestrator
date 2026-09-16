@@ -127,3 +127,48 @@ func TestPublishGistRetriesOnPublishFailure(t *testing.T) {
 		t.Fatalf("expected a retryable error, got %v", err)
 	}
 }
+
+// mockAudioStore stands in for the recordings bucket.
+type mockAudioStore struct {
+	people int
+	err    error
+}
+
+func (m *mockAudioStore) PresignedUrl(_ context.Context, key string) (string, error) {
+	return "http://minio/" + key, nil
+}
+
+func (m *mockAudioStore) SpeakerCount(_ context.Context, _ string) (int, error) {
+	return m.people, m.err
+}
+
+// Recordings archived before Pandora wrote a roster have none, and older
+// campaigns are full of them. Failing the step would cost the whole
+// transcription over a hint; it degrades to an unbounded run instead.
+func TestCountSpeakersSurvivesAMissingRoster(t *testing.T) {
+	previous := deps
+	deps = Deps{Audio: &mockAudioStore{err: errors.New("NoSuchKey")}}
+	t.Cleanup(func() { deps = previous })
+
+	got, err := CountSpeakers(&fakeActivityContext{input: presignRequest{Key: "22/1.ogg"}})
+	if err != nil {
+		t.Fatalf("a missing roster must not fail the workflow: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("expected 0 (unknown), got %v", got)
+	}
+}
+
+func TestCountSpeakersReportsTheRoster(t *testing.T) {
+	previous := deps
+	deps = Deps{Audio: &mockAudioStore{people: 7}}
+	t.Cleanup(func() { deps = previous })
+
+	got, err := CountSpeakers(&fakeActivityContext{input: presignRequest{Key: "a.ogg"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 7 {
+		t.Fatalf("expected 7, got %v", got)
+	}
+}

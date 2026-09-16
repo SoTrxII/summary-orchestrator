@@ -32,7 +32,7 @@ const (
 
 	DefaultPresignTTL     = "6h"
 	DefaultServiceName    = "summary-orchestrator"
-	DefaultServiceVersion = "0.1.3"
+	DefaultServiceVersion = "0.2.0"
 )
 
 // Config is the whole runtime configuration, read once at startup.
