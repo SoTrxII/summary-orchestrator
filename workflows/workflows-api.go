@@ -176,6 +176,25 @@ var transcriptionRetry = &workflow.RetryPolicy{
 	Handle:               isRetryable,
 }
 
+// campaignRetry waits for Graphiti to finish swallowing the episode.
+//
+// The campaign summary is rebuilt from the graph, so it cannot be written
+// until the episode just stored is queryable — and add_episode is
+// fire-and-forget on the server side. Two episodes of near-identical length
+// took 48s and 5m41s, so the honest answer to "how long does ingestion take"
+// is "minutes, and you cannot predict which".
+//
+// On a campaign's first episode this is the difference between a summary and
+// a failure rather than between a fresh brief and a stale one: with nothing
+// else in the group, the agent finds no episodes at all and refuses to write.
+var campaignRetry = &workflow.RetryPolicy{
+	MaxAttempts:          15,
+	InitialRetryInterval: 20 * time.Second,
+	BackoffCoefficient:   1.5,
+	MaxRetryInterval:     2 * time.Minute,
+	RetryTimeout:         20 * time.Minute,
+}
+
 // gistRetry waits for the rest of the pipeline to catch up. The session row
 // this gist attaches to is only written once the video has finished
 // uploading, which can happen well after the summary is ready.

@@ -157,7 +157,7 @@ func SummarizeEpisode(ctx *workflow.WorkflowContext) (any, error) {
 		var campaignSummary string
 		if err := ctx.CallActivity(WriteCampaignSummary,
 			workflow.WithActivityInput(campaignSummaryRequest{CampaignId: in.campaign()}),
-			workflow.WithActivityRetryPolicy(transientRetry),
+			workflow.WithActivityRetryPolicy(campaignRetry),
 		).Await(&campaignSummary); err != nil {
 			return nil, fmt.Errorf("summarizing campaign: %w", err)
 		}
