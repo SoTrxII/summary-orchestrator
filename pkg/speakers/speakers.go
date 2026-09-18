@@ -130,15 +130,3 @@ func (t Track) overlap(start, end float64) float64 {
 	}
 	return total
 }
-
-// GameMasters reports which of these Discord ids run the game, given the rows
-// rpg-db holds for the campaign.
-func GameMasters(rows map[string]bool) map[string]bool {
-	gms := make(map[string]bool, len(rows))
-	for id, isGM := range rows {
-		if isGM {
-			gms[id] = true
-		}
-	}
-	return gms
-}

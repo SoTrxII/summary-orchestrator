@@ -217,15 +217,16 @@ func TestFetchTranscriptionNamesSpeakersFromTheTimeline(t *testing.T) {
 			{Track: 2, UserId: "152795063859150848", Username: "sotrx",
 				Intervals: []speakers.Interval{{Start: 11, End: 16}}},
 		}}},
-		Sessions: &test_utils.MockSessionLookup{
-			GMs: map[string]bool{"188626510901542912": true},
-		},
 	}
 	t.Cleanup(func() { deps = previous })
 
 	var lines []storyteller.Line
 	got, err := FetchTranscription(&fakeActivityContext{
-		input: transcriptionResult{TaskId: "task", AudioKey: "1.ogg", CampaignId: 22},
+		input: transcriptionResult{
+			TaskId:        "task",
+			AudioKey:      "1.ogg",
+			GameMasterIds: []string{"188626510901542912"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -247,12 +248,11 @@ func TestFetchTranscriptionFallsBackToDiarization(t *testing.T) {
 	deps = Deps{
 		Transcriber: &mockTranscriber{segments: diarized()},
 		Audio:       &mockAudioStore{timelineErr: errors.New("NoSuchKey")},
-		Sessions:    &test_utils.MockSessionLookup{GMErr: errors.New("no rows")},
 	}
 	t.Cleanup(func() { deps = previous })
 
 	got, err := FetchTranscription(&fakeActivityContext{
-		input: transcriptionResult{TaskId: "task", AudioKey: "22/1.ogg", CampaignId: 22},
+		input: transcriptionResult{TaskId: "task", AudioKey: "22/1.ogg"},
 	})
 	if err != nil {
 		t.Fatalf("a missing timeline must not fail the transcription: %v", err)

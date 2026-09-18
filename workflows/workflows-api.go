@@ -32,6 +32,14 @@ type EpisodeInput struct {
 	EpisodeId int `json:"episodeId" binding:"required"`
 	// One-shots have no campaign narrative to update.
 	IsOneShot bool `json:"isOneShot"`
+	// Discord ids of whoever runs this campaign, supplied by the caller.
+	//
+	// Velvet owns the rpg database and reads playercampaign.isgm there, so the
+	// answer travels on the job rather than this service opening its own
+	// connection to a schema it does not own. Empty is normal -- it is every
+	// recording made before this, and every hand-submitted re-run -- and means
+	// nobody is marked, not that nobody runs the game.
+	GameMasterIds []string `json:"gameMasterIds"`
 	// Ids of whisper tasks that have already run, in the same order as the
 	// keys they came from. Optional: set them to skip transcribing again and
 	// collect those tasks' results instead, which is what makes re-running a

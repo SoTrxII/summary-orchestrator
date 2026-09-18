@@ -100,9 +100,9 @@ func SummarizeEpisode(ctx *workflow.WorkflowContext) (any, error) {
 		var chunk []storyteller.Line
 		if err := ctx.CallActivity(FetchTranscription,
 			workflow.WithActivityInput(transcriptionResult{
-				TaskId:     taskId,
-				AudioKey:   audioKey,
-				CampaignId: in.CampaignId,
+				TaskId:        taskId,
+				AudioKey:      audioKey,
+				GameMasterIds: in.GameMasterIds,
 			}),
 			workflow.WithActivityRetryPolicy(transcriptionRetry),
 		).Await(&chunk); err != nil {

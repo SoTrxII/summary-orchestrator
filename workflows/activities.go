@@ -37,8 +37,8 @@ type transcriptionResult struct {
 	// Recording this task transcribed. Needed to find the speaker timeline,
 	// which is stored beside the audio rather than against the whisper task.
 	AudioKey string `json:"audioKey"`
-	// Campaign the recording belongs to, used to look up who runs the game.
-	CampaignId int `json:"campaignId"`
+	// Discord ids of whoever runs this campaign, as the caller supplied them.
+	GameMasterIds []string `json:"gameMasterIds"`
 }
 
 type episodeSummaryRequest struct {
@@ -150,9 +150,9 @@ func FetchTranscription(ctx workflow.ActivityContext) (any, error) {
 	if err != nil {
 		slog.Info(fmt.Sprintf("[FetchTranscription] :: no speaker timeline for %s (%s), falling back to diarization labels", in.AudioKey, err))
 	}
-	gms, err := deps.Sessions.GameMasters(ctx.Context(), in.CampaignId)
-	if err != nil {
-		slog.Info(fmt.Sprintf("[FetchTranscription] :: cannot tell who runs campaign %d (%s), nobody marked as GM", in.CampaignId, err))
+	gms := make(map[string]bool, len(in.GameMasterIds))
+	for _, id := range in.GameMasterIds {
+		gms[id] = true
 	}
 
 	lines := make([]storyteller.Line, 0, len(segments))
