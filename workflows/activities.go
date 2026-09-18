@@ -34,6 +34,11 @@ type transcriptRequest struct {
 
 type transcriptionResult struct {
 	TaskId string `json:"taskId"`
+	// Recording this task transcribed. Needed to find the speaker timeline,
+	// which is stored beside the audio rather than against the whisper task.
+	AudioKey string `json:"audioKey"`
+	// Campaign the recording belongs to, used to look up who runs the game.
+	CampaignId int `json:"campaignId"`
 }
 
 type episodeSummaryRequest struct {
@@ -136,7 +141,22 @@ func FetchTranscription(ctx workflow.ActivityContext) (any, error) {
 		return nil, err
 	}
 
+	// Replace diarization's anonymous clusters with the people who actually
+	// spoke, when the recording was cooked recently enough to have a timeline.
+	// Both lookups degrade rather than fail: a transcript with SPEAKER_00 in it
+	// is worth far more than no transcript, and this is the step that already
+	// cost hours of CPU.
+	timeline, err := deps.Audio.SpeakerTimeline(ctx.Context(), in.AudioKey)
+	if err != nil {
+		slog.Info(fmt.Sprintf("[FetchTranscription] :: no speaker timeline for %s (%s), falling back to diarization labels", in.AudioKey, err))
+	}
+	gms, err := deps.Sessions.GameMasters(ctx.Context(), in.CampaignId)
+	if err != nil {
+		slog.Info(fmt.Sprintf("[FetchTranscription] :: cannot tell who runs campaign %d (%s), nobody marked as GM", in.CampaignId, err))
+	}
+
 	lines := make([]storyteller.Line, 0, len(segments))
+	named := 0
 	for _, s := range segments {
 		text := strings.TrimSpace(s.Text)
 		if text == "" {
@@ -146,7 +166,14 @@ func FetchTranscription(ctx workflow.ActivityContext) (any, error) {
 		if speaker == "" {
 			speaker = "UNKNOWN"
 		}
+		if track := timeline.Speaker(s.Start, s.End); track != nil {
+			speaker = track.Label(gms[track.UserId])
+			named++
+		}
 		lines = append(lines, storyteller.Line{Speaker: speaker, Text: text})
+	}
+	if named > 0 {
+		slog.Info(fmt.Sprintf("[FetchTranscription] :: %d/%d lines attributed to a named participant", named, len(lines)))
 	}
 	if len(lines) == 0 {
 		return nil, fmt.Errorf("transcription %s produced no usable dialogue", in.TaskId)

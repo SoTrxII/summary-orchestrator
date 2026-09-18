@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"summary-orchestrator/pkg/speakers"
 
 	"summary-orchestrator/internal/utils"
 
@@ -58,6 +59,28 @@ func (a *DaprAudioStore) PresignedUrl(ctx context.Context, key string) (string, 
 
 // usersSuffix is what Pandora names the roster it writes beside a recording.
 const usersSuffix = ".users"
+
+// timelineSuffix is what cooking-server names the speaker timeline it writes
+// beside a recording once cooking is done.
+const timelineSuffix = ".timeline.json"
+
+// SpeakerTimeline fetches who was transmitting when.
+//
+// Unlike the roster, this is exact: it comes from the per-user Discord streams
+// in the raw record rather than from anything inferred about the audio. It only
+// exists for recordings cooked after cooking-server started writing it, since
+// the raw record it is derived from is deleted once processing finishes.
+func (a *DaprAudioStore) SpeakerTimeline(ctx context.Context, key string) (speakers.Timeline, error) {
+	res, err := a.client.InvokeBinding(ctx, &client.InvokeBindingRequest{
+		Name:      a.componentName,
+		Operation: "get",
+		Metadata:  map[string]string{"key": key + timelineSuffix},
+	})
+	if err != nil {
+		return speakers.Timeline{}, fmt.Errorf("reading the speaker timeline of %s: %w", key, err)
+	}
+	return speakers.Parse(res.Data)
+}
 
 // SpeakerCount counts the people Pandora saw in the voice channel while a
 // recording was being made. That is an upper bound on how many voices the

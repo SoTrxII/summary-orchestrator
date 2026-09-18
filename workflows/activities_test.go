@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"summary-orchestrator/pkg/speakers"
+	"summary-orchestrator/pkg/storyteller"
+	"summary-orchestrator/pkg/transcriber"
 	"testing"
 
 	session_lookup "summary-orchestrator/pkg/session-lookup"
@@ -130,8 +133,12 @@ func TestPublishGistRetriesOnPublishFailure(t *testing.T) {
 
 // mockAudioStore stands in for the recordings bucket.
 type mockAudioStore struct {
-	people int
-	err    error
+	people   int
+	err      error
+	timeline speakers.Timeline
+	// Separate from err: a recording can have a roster and no timeline, which
+	// is every recording cooked before cooking-server started writing one.
+	timelineErr error
 }
 
 func (m *mockAudioStore) PresignedUrl(_ context.Context, key string) (string, error) {
@@ -140,6 +147,10 @@ func (m *mockAudioStore) PresignedUrl(_ context.Context, key string) (string, er
 
 func (m *mockAudioStore) SpeakerCount(_ context.Context, _ string) (int, error) {
 	return m.people, m.err
+}
+
+func (m *mockAudioStore) SpeakerTimeline(_ context.Context, _ string) (speakers.Timeline, error) {
+	return m.timeline, m.timelineErr
 }
 
 // Recordings archived before Pandora wrote a roster have none, and older
@@ -170,5 +181,86 @@ func TestCountSpeakersReportsTheRoster(t *testing.T) {
 	}
 	if got != 7 {
 		t.Fatalf("expected 7, got %v", got)
+	}
+}
+
+// mockTranscriber returns a fixed diarized transcript.
+type mockTranscriber struct {
+	segments []transcriber.Segment
+}
+
+func (m *mockTranscriber) Start(_ context.Context, _ string, _ int) (string, error) {
+	return "task", nil
+}
+
+func (m *mockTranscriber) Result(_ context.Context, _ string) ([]transcriber.Segment, error) {
+	return m.segments, nil
+}
+
+func diarized() []transcriber.Segment {
+	return []transcriber.Segment{
+		{Start: 1, End: 4, Speaker: "SPEAKER_00", Text: "On entre dans la crypte."},
+		{Start: 12, End: 15, Speaker: "SPEAKER_01", Text: "Je dégaine."},
+	}
+}
+
+// The whole point of the timeline: a diarized cluster is unusable downstream,
+// a Discord account is not. The GM has to be marked, because that is what
+// separates a player character from an NPC.
+func TestFetchTranscriptionNamesSpeakersFromTheTimeline(t *testing.T) {
+	previous := deps
+	deps = Deps{
+		Transcriber: &mockTranscriber{segments: diarized()},
+		Audio: &mockAudioStore{timeline: speakers.Timeline{Tracks: []speakers.Track{
+			{Track: 1, UserId: "188626510901542912", Username: "shrecki",
+				Intervals: []speakers.Interval{{Start: 0, End: 5}}},
+			{Track: 2, UserId: "152795063859150848", Username: "sotrx",
+				Intervals: []speakers.Interval{{Start: 11, End: 16}}},
+		}}},
+		Sessions: &test_utils.MockSessionLookup{
+			GMs: map[string]bool{"188626510901542912": true},
+		},
+	}
+	t.Cleanup(func() { deps = previous })
+
+	var lines []storyteller.Line
+	got, err := FetchTranscription(&fakeActivityContext{
+		input: transcriptionResult{TaskId: "task", AudioKey: "1.ogg", CampaignId: 22},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	lines = got.([]storyteller.Line)
+
+	if lines[0].Speaker != "shrecki (MJ)" {
+		t.Errorf("expected the game master to be marked, got %q", lines[0].Speaker)
+	}
+	if lines[1].Speaker != "sotrx" {
+		t.Errorf("expected a named player, got %q", lines[1].Speaker)
+	}
+}
+
+// Every recording cooked before the timeline existed has none, and the raw
+// records it is derived from are long deleted. Those must still transcribe.
+func TestFetchTranscriptionFallsBackToDiarization(t *testing.T) {
+	previous := deps
+	deps = Deps{
+		Transcriber: &mockTranscriber{segments: diarized()},
+		Audio:       &mockAudioStore{timelineErr: errors.New("NoSuchKey")},
+		Sessions:    &test_utils.MockSessionLookup{GMErr: errors.New("no rows")},
+	}
+	t.Cleanup(func() { deps = previous })
+
+	got, err := FetchTranscription(&fakeActivityContext{
+		input: transcriptionResult{TaskId: "task", AudioKey: "22/1.ogg", CampaignId: 22},
+	})
+	if err != nil {
+		t.Fatalf("a missing timeline must not fail the transcription: %v", err)
+	}
+	lines := got.([]storyteller.Line)
+
+	if lines[0].Speaker != "SPEAKER_00" || lines[1].Speaker != "SPEAKER_01" {
+		t.Errorf("expected the diarized labels to survive, got %q and %q",
+			lines[0].Speaker, lines[1].Speaker)
 	}
 }

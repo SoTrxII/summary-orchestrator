@@ -86,10 +86,24 @@ func SummarizeEpisode(ctx *workflow.WorkflowContext) (any, error) {
 	// concatenated transcript has to follow the same order to read as one
 	// session rather than a shuffled one.
 	var lines []storyteller.Line
-	for _, taskId := range taskIds {
+	for i, taskId := range taskIds {
+		// The recording each task came from, so its speaker timeline can be
+		// found. taskIds is built by walking keys in order, and a caller
+		// supplying transcriptionIds is documented to list them in the same
+		// order as the keys they came from -- but a caller that supplies only
+		// task ids and no keys is still valid, so this must not index blindly.
+		var audioKey string
+		if i < len(keys) {
+			audioKey = keys[i]
+		}
+
 		var chunk []storyteller.Line
 		if err := ctx.CallActivity(FetchTranscription,
-			workflow.WithActivityInput(transcriptionResult{TaskId: taskId}),
+			workflow.WithActivityInput(transcriptionResult{
+				TaskId:     taskId,
+				AudioKey:   audioKey,
+				CampaignId: in.CampaignId,
+			}),
 			workflow.WithActivityRetryPolicy(transcriptionRetry),
 		).Await(&chunk); err != nil {
 			return nil, fmt.Errorf("transcribing task %s: %w", taskId, err)

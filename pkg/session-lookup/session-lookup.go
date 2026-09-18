@@ -62,6 +62,48 @@ func (s *DaprSessionLookup) SessionNumber(ctx context.Context, campaignId, episo
 	return int(number), nil
 }
 
+// Velvet registers every participant against the campaign, GM included, so the
+// flag lives here rather than anywhere in the recording pipeline. Discord ids
+// are text, which is what the timeline sidecar carries too.
+const gameMasterQuery = `SELECT playerid FROM playercampaign WHERE campaignid = $1 AND isgm = true`
+
+func (s *DaprSessionLookup) GameMasters(ctx context.Context, campaignId int) (map[string]bool, error) {
+	params, err := json.Marshal([]any{campaignId})
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := s.client.InvokeBinding(ctx, &client.InvokeBindingRequest{
+		Name:      s.componentName,
+		Operation: "query",
+		Metadata: map[string]string{
+			"sql":    sanitize(gameMasterQuery),
+			"params": string(params),
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("looking up the game masters of campaign %d: %w", campaignId, err)
+	}
+
+	var rows [][]any
+	if err := json.Unmarshal(res.Data, &rows); err != nil {
+		return nil, fmt.Errorf("looking up the game masters of campaign %d: unreadable response: %w", campaignId, err)
+	}
+
+	gms := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if len(row) == 0 {
+			continue
+		}
+		// Discord ids exceed float64's exact integer range, which is why the
+		// column is text and why this must never be parsed as a number.
+		if id, ok := row[0].(string); ok && id != "" {
+			gms[id] = true
+		}
+	}
+	return gms, nil
+}
+
 // sanitize flattens a query onto one line: the sql travels as binding
 // metadata, which is not the place for newlines and tabs.
 func sanitize(sql string) string {
