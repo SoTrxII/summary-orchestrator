@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
+
 	"summary-orchestrator/pkg/speakers"
 
 	"summary-orchestrator/internal/utils"
@@ -56,6 +58,68 @@ func (a *DaprAudioStore) PresignedUrl(ctx context.Context, key string) (string, 
 	}
 	return parsed.PresignUrl, nil
 }
+
+// listResponse is the part of the S3 binding's "list" answer we read. The
+// binding marshals the SDK's ListObjectsV2Output straight through, so the
+// field names are the SDK's, capitalised, and LastModified is RFC3339.
+type listResponse struct {
+	Contents []struct {
+		Key          string    `json:"Key"`
+		LastModified time.Time `json:"LastModified"`
+	} `json:"Contents"`
+}
+
+// RecordedAt reports when a recording landed in the bucket.
+//
+// There is no "stat" operation on the S3 binding -- create, get, delete and
+// list are all of it -- so this lists by prefix and picks the exact key out of
+// the answer. The prefix is not enough on its own: the sidecar files Pandora
+// and cooking-server write share it, so "119472335.ogg" also matches
+// "119472335.ogg.data" and "119472335.ogg.users", and those were written at
+// different times.
+//
+// A missing date is not a failure. Older recordings whose objects have been
+// pruned, and anything submitted by task id with no key at all, simply have
+// none; the caller leaves the episode's reference time unset, which is what
+// every episode stored before this existed did.
+func (a *DaprAudioStore) RecordedAt(ctx context.Context, key string) (time.Time, error) {
+	if key == "" {
+		return time.Time{}, fmt.Errorf("no key to date")
+	}
+
+	payload, err := json.Marshal(map[string]any{"prefix": key, "maxResults": listPageSize})
+	if err != nil {
+		return time.Time{}, err
+	}
+	res, err := a.client.InvokeBinding(ctx, &client.InvokeBindingRequest{
+		Name:      a.componentName,
+		Operation: "list",
+		Data:      payload,
+	})
+	if err != nil {
+		return time.Time{}, fmt.Errorf("listing %s: %w", key, err)
+	}
+
+	var parsed listResponse
+	if err := json.Unmarshal(res.Data, &parsed); err != nil {
+		return time.Time{}, fmt.Errorf("listing %s: unreadable response: %w", key, err)
+	}
+	for _, object := range parsed.Contents {
+		if object.Key == key {
+			if object.LastModified.IsZero() {
+				return time.Time{}, fmt.Errorf("listing %s: no last-modified date", key)
+			}
+			return object.LastModified, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("listing %s: not in the bucket", key)
+}
+
+// listPageSize is how many objects to ask for when dating one. The prefix
+// matches the recording plus its sidecars (.data, .users, .timeline.json), so
+// a handful is enough -- but the exact-key scan above is what makes it correct
+// rather than this number.
+const listPageSize = 16
 
 // usersSuffix is what Pandora names the roster it writes beside a recording.
 const usersSuffix = ".users"

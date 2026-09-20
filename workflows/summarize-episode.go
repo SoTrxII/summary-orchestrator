@@ -145,6 +145,7 @@ func SummarizeEpisode(ctx *workflow.WorkflowContext) (any, error) {
 			CampaignId: in.campaign(),
 			EpisodeId:  in.episode(),
 			Lines:      lines,
+			AudioKeys:  keys,
 		}),
 		workflow.WithActivityRetryPolicy(noRetry),
 	).Await(&episodeSummary); err != nil {

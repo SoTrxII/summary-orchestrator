@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	test_utils "summary-orchestrator/test-utils"
 )
@@ -128,5 +130,60 @@ func TestSpeakerCountDecodesBase64Payloads(t *testing.T) {
 	}
 	if people != 2 {
 		t.Fatalf("expected 2 speakers through base64, got %d", people)
+	}
+}
+
+// The real answer from the binding, trimmed: MinIO's own listing for the key
+// campaign 22 episode 4 was transcribed from, with the sidecar objects that
+// share its prefix and were written at other times.
+const listing = `{"Contents":[
+ {"Key":"155111112.ogg.data","LastModified":"2026-01-05T21:40:11.000Z","Size":72279352},
+ {"Key":"155111112.ogg","LastModified":"2026-01-05T22:05:18.955Z","Size":38069037},
+ {"Key":"155111112.ogg.users","LastModified":"2026-01-05T19:02:44.000Z","Size":210}
+],"IsTruncated":true,"Name":"recordings"}`
+
+func TestRecordedAtPicksTheExactKeyNotTheFirstMatch(t *testing.T) {
+	binder := &test_utils.MockBinder{Data: []byte(listing)}
+	store := New("object-store", "6h", binder)
+
+	got, err := store.RecordedAt(context.Background(), "155111112.ogg")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := time.Date(2026, 1, 5, 22, 5, 18, 955000000, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+
+	// There is no stat operation on the S3 binding; list is the only way in.
+	if len(binder.Calls) != 1 || binder.Calls[0].Operation != "list" {
+		t.Fatalf("expected one list call, got %+v", binder.Calls)
+	}
+	if !strings.Contains(string(binder.Calls[0].Data), `"prefix":"155111112.ogg"`) {
+		t.Fatalf("listed without the key as a prefix: %s", binder.Calls[0].Data)
+	}
+}
+
+// A pruned recording still has a transcript and a whisper task, so this is a
+// normal state rather than a broken one. It has to read as "no date", which the
+// caller turns into an undated episode.
+func TestRecordedAtReportsAMissingObject(t *testing.T) {
+	store := New("object-store", "6h", &test_utils.MockBinder{
+		Data: []byte(`{"Contents":[],"Name":"recordings"}`)})
+
+	if _, err := store.RecordedAt(context.Background(), "gone.ogg"); err == nil {
+		t.Fatal("expected an error for an object that is not there")
+	}
+}
+
+func TestRecordedAtWithoutAKeyMakesNoCall(t *testing.T) {
+	binder := &test_utils.MockBinder{}
+	store := New("object-store", "6h", binder)
+
+	if _, err := store.RecordedAt(context.Background(), ""); err == nil {
+		t.Fatal("expected an error for an empty key")
+	}
+	if len(binder.Calls) != 0 {
+		t.Fatalf("listed the whole bucket for an empty key: %+v", binder.Calls)
 	}
 }

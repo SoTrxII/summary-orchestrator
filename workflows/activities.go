@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	session_lookup "summary-orchestrator/pkg/session-lookup"
 	"summary-orchestrator/pkg/storyteller"
@@ -45,6 +46,10 @@ type episodeSummaryRequest struct {
 	CampaignId string             `json:"campaignId"`
 	EpisodeId  string             `json:"episodeId"`
 	Lines      []storyteller.Line `json:"lines"`
+	// Recordings this episode was transcribed from, in order. Carried only so
+	// the activity can date the session from the first one; a caller that
+	// supplied task ids and no keys simply gets an undated episode.
+	AudioKeys []string `json:"audioKeys"`
 }
 
 type campaignSummaryRequest struct {
@@ -194,7 +199,32 @@ func WriteEpisodeSummary(ctx workflow.ActivityContext) (any, error) {
 		return nil, err
 	}
 	cast := deps.Summaries.LoadCast(ctx.Context(), in.CampaignId)
-	return deps.Agent.SummarizeEpisode(ctx.Context(), in.CampaignId, in.EpisodeId, in.Lines, cast)
+	return deps.Agent.SummarizeEpisode(ctx.Context(), in.CampaignId, in.EpisodeId,
+		in.Lines, cast, recordedAt(ctx, in.AudioKeys))
+}
+
+// recordedAt dates the session from its first recording, or returns "" when it
+// cannot be dated at all.
+//
+// The first key, not the last: a session that dropped and resumed comes back as
+// consecutive chunks, and the episode belongs at the moment it started rather
+// than at whichever reconnect happened to be final.
+//
+// Never fails the activity. WriteEpisodeSummary runs under noRetry because it
+// writes to the knowledge graph, so anything that returns an error here costs
+// the episode its chapter outright -- for a field whose absence only restores
+// the behaviour every previously stored episode already has.
+func recordedAt(ctx workflow.ActivityContext, keys []string) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	when, err := deps.Audio.RecordedAt(ctx.Context(), keys[0])
+	if err != nil {
+		slog.Info(fmt.Sprintf("[WriteEpisodeSummary] :: cannot date %s (%s), "+
+			"the episode will be stamped at ingestion", keys[0], err))
+		return ""
+	}
+	return when.UTC().Format(time.RFC3339)
 }
 
 // WriteCampaignSummary rebuilds the campaign narrative from the graph. Safe to

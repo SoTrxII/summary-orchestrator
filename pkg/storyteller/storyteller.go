@@ -47,14 +47,28 @@ func New(endpoint, apiKey, agent string, viaGateway bool, client *http.Client) *
 	}
 }
 
-func (a *A2A) SummarizeEpisode(ctx context.Context, campaignId, episodeId string, lines []Line, cast string) (string, error) {
+func (a *A2A) SummarizeEpisode(ctx context.Context, campaignId, episodeId string, lines []Line, cast, recordedAt string) (string, error) {
 	content, err := json.Marshal(lines)
 	if err != nil {
 		return "", err
 	}
 	return a.send(ctx, fmt.Sprintf(
-		"Tâche: episode\nCampagne: %s\nEpisode: %s\n%s[CONTENU]\n%s",
-		campaignId, episodeId, castSection(cast), content))
+		"Tâche: episode\nCampagne: %s\nEpisode: %s\n%s%s[CONTENU]\n%s",
+		campaignId, episodeId, dateHeader(recordedAt), castSection(cast), content))
+}
+
+// dateHeader renders the optional Date header the agent reads as the episode's
+// Graphiti reference time.
+//
+// Omitted when unknown rather than sent empty or zeroed: Graphiti reads a
+// missing reference time as "stamp this at ingestion", and there is no value
+// that means "I don't know". A zero date would put the episode in year 1 and
+// win every bi-temporal contradiction forever.
+func dateHeader(recordedAt string) string {
+	if strings.TrimSpace(recordedAt) == "" {
+		return ""
+	}
+	return fmt.Sprintf("Date: %s\n", strings.TrimSpace(recordedAt))
 }
 
 func (a *A2A) SummarizeCampaign(ctx context.Context, campaignId string, cast string) (string, error) {

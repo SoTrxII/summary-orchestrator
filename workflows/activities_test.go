@@ -8,8 +8,10 @@ import (
 	"summary-orchestrator/pkg/storyteller"
 	"summary-orchestrator/pkg/transcriber"
 	"testing"
+	"time"
 
 	session_lookup "summary-orchestrator/pkg/session-lookup"
+	summary_store "summary-orchestrator/pkg/summary-store"
 	test_utils "summary-orchestrator/test-utils"
 
 	"github.com/dapr/durabletask-go/workflow"
@@ -139,6 +141,12 @@ type mockAudioStore struct {
 	// Separate from err: a recording can have a roster and no timeline, which
 	// is every recording cooked before cooking-server started writing one.
 	timelineErr error
+	// Separate again: an object can be gone from the bucket while its
+	// transcript and its whisper task both survive, which is the normal state
+	// of every campaign old enough to have been pruned.
+	recordedAt    time.Time
+	recordedAtErr error
+	dated         []string
 }
 
 func (m *mockAudioStore) PresignedUrl(_ context.Context, key string) (string, error) {
@@ -151,6 +159,11 @@ func (m *mockAudioStore) SpeakerCount(_ context.Context, _ string) (int, error) 
 
 func (m *mockAudioStore) SpeakerTimeline(_ context.Context, _ string) (speakers.Timeline, error) {
 	return m.timeline, m.timelineErr
+}
+
+func (m *mockAudioStore) RecordedAt(_ context.Context, key string) (time.Time, error) {
+	m.dated = append(m.dated, key)
+	return m.recordedAt, m.recordedAtErr
 }
 
 // Recordings archived before Pandora wrote a roster have none, and older
@@ -262,5 +275,97 @@ func TestFetchTranscriptionFallsBackToDiarization(t *testing.T) {
 	if lines[0].Speaker != "SPEAKER_00" || lines[1].Speaker != "SPEAKER_01" {
 		t.Errorf("expected the diarized labels to survive, got %q and %q",
 			lines[0].Speaker, lines[1].Speaker)
+	}
+}
+
+// mockAgent records what reached the A2A client.
+type mockAgent struct {
+	recordedAt string
+}
+
+func (m *mockAgent) SummarizeEpisode(_ context.Context, _, _ string, _ []storyteller.Line, _, recordedAt string) (string, error) {
+	m.recordedAt = recordedAt
+	return "Chapitre.", nil
+}
+
+func (m *mockAgent) SummarizeCampaign(_ context.Context, _, _ string) (string, error) {
+	return "Récit.", nil
+}
+
+func (m *mockAgent) Gist(_ context.Context, _, _, _ string) (string, error) { return "Gist.", nil }
+
+// mockSummaries supplies the cast the activity fetches at the point of use.
+type mockSummaries struct{ summary_store.SummaryStore }
+
+func (m *mockSummaries) LoadCast(_ context.Context, _ string) string { return "" }
+
+// An episode dated from its recording is an episode the knowledge graph can
+// order. Without this every fact carries the moment of ingestion instead, and
+// a campaign rebuilt today has eight episodes stamped minutes apart.
+func TestWriteEpisodeSummaryDatesTheEpisodeFromItsRecording(t *testing.T) {
+	previous := deps
+	agent := &mockAgent{}
+	audio := &mockAudioStore{recordedAt: time.Date(2026, 1, 5, 22, 5, 18, 0, time.UTC)}
+	deps = Deps{Audio: audio, Agent: agent, Summaries: &mockSummaries{}}
+	t.Cleanup(func() { deps = previous })
+
+	_, err := WriteEpisodeSummary(&fakeActivityContext{input: episodeSummaryRequest{
+		CampaignId: "22",
+		EpisodeId:  "4",
+		AudioKeys:  []string{"155111112.ogg", "155111113.ogg"},
+	}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if agent.recordedAt != "2026-01-05T22:05:18Z" {
+		t.Fatalf("got %q", agent.recordedAt)
+	}
+	// The first chunk, not the last: a session that dropped and resumed belongs
+	// at the moment it started.
+	if len(audio.dated) != 1 || audio.dated[0] != "155111112.ogg" {
+		t.Fatalf("dated %v", audio.dated)
+	}
+}
+
+// The object is gone, or was never there because the caller submitted task ids
+// only. This step runs under noRetry, so failing here would cost the episode
+// its chapter over a field that every previously stored episode also lacks.
+func TestWriteEpisodeSummarySurvivesAnUndatableRecording(t *testing.T) {
+	previous := deps
+	agent := &mockAgent{}
+	deps = Deps{
+		Audio:     &mockAudioStore{recordedAtErr: errors.New("not in the bucket")},
+		Agent:     agent,
+		Summaries: &mockSummaries{},
+	}
+	t.Cleanup(func() { deps = previous })
+
+	got, err := WriteEpisodeSummary(&fakeActivityContext{input: episodeSummaryRequest{
+		CampaignId: "22", EpisodeId: "4", AudioKeys: []string{"gone.ogg"},
+	}})
+	if err != nil {
+		t.Fatalf("an undatable recording must not fail the chapter: %v", err)
+	}
+	if got != "Chapitre." {
+		t.Fatalf("got %v", got)
+	}
+	if agent.recordedAt != "" {
+		t.Fatalf("expected no date, got %q", agent.recordedAt)
+	}
+}
+
+func TestWriteEpisodeSummaryWithNoKeysDoesNotAskForADate(t *testing.T) {
+	previous := deps
+	audio := &mockAudioStore{}
+	deps = Deps{Audio: audio, Agent: &mockAgent{}, Summaries: &mockSummaries{}}
+	t.Cleanup(func() { deps = previous })
+
+	if _, err := WriteEpisodeSummary(&fakeActivityContext{input: episodeSummaryRequest{
+		CampaignId: "22", EpisodeId: "4",
+	}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(audio.dated) != 0 {
+		t.Fatalf("asked to date %v with no keys", audio.dated)
 	}
 }
