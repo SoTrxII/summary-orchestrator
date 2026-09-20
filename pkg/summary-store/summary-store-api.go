@@ -39,4 +39,8 @@ type SummaryStore interface {
 	// CampaignKey is where a campaign summary lives, whether or not one has
 	// been written yet.
 	CampaignKey(campaignId string) string
+	// LoadCast returns the campaign's curated cast list as raw JSON, or "" when
+	// it has none. Never fails: a cast improves a summary, it is not required
+	// for one.
+	LoadCast(ctx context.Context, campaignId string) string
 }

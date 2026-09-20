@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"summary-orchestrator/internal/utils"
 
@@ -38,6 +39,41 @@ func EpisodeKey(campaignId, episodeId string) string {
 // of what is known about an episode is under one prefix.
 func TranscriptKey(campaignId, episodeId string) string {
 	return fmt.Sprintf("campaigns/%s/episodes/%s/transcript.json", campaignId, episodeId)
+}
+
+// CastKey is where a campaign's cast list lives. It sits beside the campaign
+// summary rather than under an episode: the cast is a property of the campaign,
+// and every episode of it reads the same file.
+func CastKey(campaignId string) string {
+	return fmt.Sprintf("campaigns/%s/cast.json", campaignId)
+}
+
+// LoadCast reads the campaign's cast list, or reports that it has none.
+//
+// A missing cast is the normal case, not a failure: only campaigns somebody has
+// curated have one, and the summary is merely better when it exists. Every error
+// path therefore degrades to the empty string — an unreadable or half-edited file
+// must not cost an episode its chapter.
+func (s *DaprSummaryStore) LoadCast(ctx context.Context, campaignId string) string {
+	key := CastKey(campaignId)
+	res, err := s.client.InvokeBinding(ctx, &client.InvokeBindingRequest{
+		Name:      s.componentName,
+		Operation: "get",
+		Metadata:  map[string]string{"key": key},
+	})
+	if err != nil {
+		slog.Info(fmt.Sprintf("[SummaryStore] :: no cast for campaign %s (%s)", campaignId, err))
+		return ""
+	}
+	// The summaries binding has decodeBase64 false, so this is the stored bytes
+	// as written. Validated here rather than in the agent so a broken file is
+	// reported by the service that can name the key.
+	if !json.Valid(res.Data) {
+		slog.Warn(fmt.Sprintf("[SummaryStore] :: %s is not valid JSON, ignoring it", key))
+		return ""
+	}
+	slog.Info(fmt.Sprintf("[SummaryStore] :: loaded cast for campaign %s (%d bytes)", campaignId, len(res.Data)))
+	return string(res.Data)
 }
 
 func (s *DaprSummaryStore) CampaignKey(campaignId string) string {

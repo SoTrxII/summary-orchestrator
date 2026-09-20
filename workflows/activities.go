@@ -183,12 +183,18 @@ func FetchTranscription(ctx workflow.ActivityContext) (any, error) {
 
 // WriteEpisodeSummary asks the agent for the chapter. Not idempotent: the
 // agent stores what it writes in the knowledge graph.
+//
+// The campaign's cast list is fetched here rather than passed in through the
+// workflow input: it is a property of the campaign, it can be corrected between
+// two episodes of the same run, and reading it at the point of use means the
+// next episode picks up the correction without restarting anything.
 func WriteEpisodeSummary(ctx workflow.ActivityContext) (any, error) {
 	var in episodeSummaryRequest
 	if err := ctx.GetInput(&in); err != nil {
 		return nil, err
 	}
-	return deps.Agent.SummarizeEpisode(ctx.Context(), in.CampaignId, in.EpisodeId, in.Lines)
+	cast := deps.Summaries.LoadCast(ctx.Context(), in.CampaignId)
+	return deps.Agent.SummarizeEpisode(ctx.Context(), in.CampaignId, in.EpisodeId, in.Lines, cast)
 }
 
 // WriteCampaignSummary rebuilds the campaign narrative from the graph. Safe to
@@ -198,7 +204,8 @@ func WriteCampaignSummary(ctx workflow.ActivityContext) (any, error) {
 	if err := ctx.GetInput(&in); err != nil {
 		return nil, err
 	}
-	return deps.Agent.SummarizeCampaign(ctx.Context(), in.CampaignId)
+	cast := deps.Summaries.LoadCast(ctx.Context(), in.CampaignId)
+	return deps.Agent.SummarizeCampaign(ctx.Context(), in.CampaignId, cast)
 }
 
 func StoreEpisodeSummary(ctx workflow.ActivityContext) (any, error) {

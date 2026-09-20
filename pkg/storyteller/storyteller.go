@@ -47,24 +47,36 @@ func New(endpoint, apiKey, agent string, viaGateway bool, client *http.Client) *
 	}
 }
 
-func (a *A2A) SummarizeEpisode(ctx context.Context, campaignId, episodeId string, lines []Line) (string, error) {
+func (a *A2A) SummarizeEpisode(ctx context.Context, campaignId, episodeId string, lines []Line, cast string) (string, error) {
 	content, err := json.Marshal(lines)
 	if err != nil {
 		return "", err
 	}
 	return a.send(ctx, fmt.Sprintf(
-		"Tâche: episode\nCampagne: %s\nEpisode: %s\n[CONTENU]\n%s",
-		campaignId, episodeId, content))
+		"Tâche: episode\nCampagne: %s\nEpisode: %s\n%s[CONTENU]\n%s",
+		campaignId, episodeId, castSection(cast), content))
 }
 
-func (a *A2A) SummarizeCampaign(ctx context.Context, campaignId string) (string, error) {
-	return a.send(ctx, fmt.Sprintf("Tâche: campagne\nCampagne: %s", campaignId))
+func (a *A2A) SummarizeCampaign(ctx context.Context, campaignId string, cast string) (string, error) {
+	return a.send(ctx, fmt.Sprintf(
+		"Tâche: campagne\nCampagne: %s\n%s", campaignId, castSection(cast)))
+}
+
+// castSection renders the optional [CASTING] block the agent parses, ahead of
+// [CONTENU] so the content section stays "everything after the marker".
+//
+// Omitted entirely when there is no cast: an empty section would have the agent
+// print a "distribution vérifiée" heading over nothing, which reads as an
+// assertion that the campaign has no characters rather than as an absence of
+// information.
+func castSection(cast string) string {
+	if strings.TrimSpace(cast) == "" {
+		return ""
+	}
+	return fmt.Sprintf("[CASTING]\n%s\n", strings.TrimSpace(cast))
 }
 
 // Gist asks for the short form of an already-written episode summary.
-//
-// NOTE: the agent does not implement a "gist" task yet. Until it does, this
-// header falls through to its default branch and returns another full chapter.
 func (a *A2A) Gist(ctx context.Context, campaignId, episodeId, summary string) (string, error) {
 	return a.send(ctx, fmt.Sprintf(
 		"Tâche: gist\nCampagne: %s\nEpisode: %s\n[CONTENU]\n%s",

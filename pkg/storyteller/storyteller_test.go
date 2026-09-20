@@ -31,7 +31,7 @@ func TestReadsArtifactText(t *testing.T) {
 		"status":{"state":"TASK_STATE_COMPLETED"},
 		"artifacts":[{"parts":[{"text":"Chapitre premier."}]}]}}}`)
 
-	got, err := agent.SummarizeEpisode(context.Background(), "14", "4", []Line{{Speaker: "Alice", Text: "Bonjour"}})
+	got, err := agent.SummarizeEpisode(context.Background(), "14", "4", []Line{{Speaker: "Alice", Text: "Bonjour"}}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestFallsBackToMessageParts(t *testing.T) {
 	agent, _, _ := agentServing(t, `{"jsonrpc":"2.0","id":"1","result":{"message":{
 		"role":"ROLE_AGENT","parts":[{"text":"Un résumé."}]}}}`)
 
-	got, err := agent.SummarizeCampaign(context.Background(), "14")
+	got, err := agent.SummarizeCampaign(context.Background(), "14", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestFailedTaskReasonIsSurfaced(t *testing.T) {
 		"status":{"state":"TASK_STATE_FAILED","message":{"parts":[{"text":"Erreur : 401 unauthorized"}]}},
 		"artifacts":[]}}}`)
 
-	_, err := agent.SummarizeCampaign(context.Background(), "14")
+	_, err := agent.SummarizeCampaign(context.Background(), "14", "")
 	if err == nil {
 		t.Fatal("expected an error when the agent returns nothing")
 	}
@@ -76,7 +76,7 @@ func TestEmptyAnswerIsAnError(t *testing.T) {
 	agent, _, _ := agentServing(t, `{"jsonrpc":"2.0","id":"1","result":{"task":{
 		"status":{"state":"TASK_STATE_FAILED"},"artifacts":[]}}}`)
 
-	if _, err := agent.SummarizeCampaign(context.Background(), "14"); err == nil {
+	if _, err := agent.SummarizeCampaign(context.Background(), "14", ""); err == nil {
 		t.Fatal("expected an error when the agent returns nothing")
 	}
 }
@@ -84,7 +84,7 @@ func TestEmptyAnswerIsAnError(t *testing.T) {
 func TestJsonRpcErrorIsSurfaced(t *testing.T) {
 	agent, _, _ := agentServing(t, `{"jsonrpc":"2.0","id":"1","error":{"code":-32603,"message":"boom"}}`)
 
-	if _, err := agent.SummarizeCampaign(context.Background(), "14"); err == nil ||
+	if _, err := agent.SummarizeCampaign(context.Background(), "14", ""); err == nil ||
 		!strings.Contains(err.Error(), "boom") {
 		t.Fatalf("expected the agent's own error, got %v", err)
 	}
@@ -96,7 +96,7 @@ func TestJsonRpcErrorIsSurfaced(t *testing.T) {
 func TestSpeaksProtocolV1(t *testing.T) {
 	agent, req, body := agentServing(t, `{"result":{"task":{"artifacts":[{"parts":[{"text":"ok"}]}]}}}`)
 
-	if _, err := agent.SummarizeCampaign(context.Background(), "14"); err != nil {
+	if _, err := agent.SummarizeCampaign(context.Background(), "14", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := req.Header.Get("A2A-Version"); got != "1.0" {
@@ -119,7 +119,7 @@ func TestEpisodeEnvelope(t *testing.T) {
 	agent, _, body := agentServing(t, `{"jsonrpc":"2.0","id":"1","result":{"task":{
 		"artifacts":[{"parts":[{"text":"ok"}]}]}}}`)
 
-	if _, err := agent.SummarizeEpisode(context.Background(), "14", "04", []Line{{Speaker: "Alice", Text: "Bonjour"}}); err != nil {
+	if _, err := agent.SummarizeEpisode(context.Background(), "14", "04", []Line{{Speaker: "Alice", Text: "Bonjour"}}, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, want := range []string{
@@ -156,7 +156,7 @@ func recordingAgent(t *testing.T, viaGateway bool) (*A2A, *[]string) {
 // and there is no proxy to ask for an id.
 func TestDirectModePostsToRoot(t *testing.T) {
 	agent, paths := recordingAgent(t, false)
-	if _, err := agent.SummarizeCampaign(context.Background(), "14"); err != nil {
+	if _, err := agent.SummarizeCampaign(context.Background(), "14", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(*paths) != 1 || (*paths)[0] != "/" {
@@ -168,10 +168,66 @@ func TestDirectModePostsToRoot(t *testing.T) {
 // agent name, so the name has to be resolved first.
 func TestGatewayModeResolvesAgentId(t *testing.T) {
 	agent, paths := recordingAgent(t, true)
-	if _, err := agent.SummarizeCampaign(context.Background(), "14"); err != nil {
+	if _, err := agent.SummarizeCampaign(context.Background(), "14", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(*paths) != 2 || (*paths)[0] != "/v1/agents" || (*paths)[1] != "/a2a/uuid-1" {
 		t.Fatalf("expected a lookup then /a2a/uuid-1, got %v", *paths)
 	}
 }
+
+// The cast travels in its own section ahead of [CONTENU], because the agent
+// reads the content as "everything after that marker". Putting it anywhere else
+// would fold the cast into the transcript.
+func TestCastRidesAheadOfTheTranscript(t *testing.T) {
+	agent, _, body := agentServing(t, okTask)
+	cast := `{"characters":[{"name":"Kit"}],"participants":["Lucas"]}`
+
+	if _, err := agent.SummarizeEpisode(context.Background(), "22", "1",
+		[]Line{{Speaker: "Alice", Text: "Bonjour"}}, cast); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sent := *body
+	castAt := strings.Index(sent, "[CASTING]")
+	contentAt := strings.Index(sent, "[CONTENU]")
+	if castAt < 0 {
+		t.Fatalf("no cast section in %q", sent)
+	}
+	if castAt > contentAt {
+		t.Fatalf("cast section came after the transcript")
+	}
+	if !strings.Contains(sent, `participants`) {
+		t.Errorf("cast body not sent: %q", sent)
+	}
+}
+
+// Every campaign that nobody has curated goes down this path, so it has to
+// leave the message exactly as it was before the cast existed.
+func TestNoCastLeavesTheMessageUnchanged(t *testing.T) {
+	agent, _, body := agentServing(t, okTask)
+
+	if _, err := agent.SummarizeEpisode(context.Background(), "22", "1",
+		[]Line{{Speaker: "Alice", Text: "Bonjour"}}, "   "); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(*body, "CASTING") {
+		t.Fatalf("emitted an empty cast section: %q", *body)
+	}
+}
+
+func TestCampaignSummaryCarriesTheCastToo(t *testing.T) {
+	agent, _, body := agentServing(t, okTask)
+
+	if _, err := agent.SummarizeCampaign(context.Background(), "22",
+		`{"participants":["Lucas"]}`); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(*body, "[CASTING]") {
+		t.Fatalf("campaign message lost the cast: %q", *body)
+	}
+}
+
+const okTask = `{"jsonrpc":"2.0","id":"1","result":{"task":{
+	"status":{"state":"TASK_STATE_COMPLETED"},
+	"artifacts":[{"parts":[{"text":"Chapitre premier."}]}]}}}`

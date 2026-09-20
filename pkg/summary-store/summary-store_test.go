@@ -64,3 +64,49 @@ func TestTranscriptSitsBesideItsSummary(t *testing.T) {
 		t.Fatalf("EpisodeKey = %q, want %q", got, want)
 	}
 }
+
+// A curated cast is what stops the summarizer inventing one. It is optional
+// though, and every way of not having one has to cost an episode nothing: a
+// campaign nobody has curated, a bucket that 404s, and a file somebody is
+// halfway through editing by hand all have to read as "no cast".
+func TestLoadCastDegradesRatherThanFailing(t *testing.T) {
+	cast := `{"characters":[{"name":"Kit"}],"participants":["Lucas"]}`
+
+	for _, tc := range []struct {
+		name string
+		data []byte
+		err  error
+		want string
+	}{
+		{"a curated campaign", []byte(cast), nil, cast},
+		{"no cast file at all", nil, errNotFound{}, ""},
+		{"a file broken mid-edit", []byte(`{"characters":[{"name":`), nil, ""},
+		{"an empty object read back", []byte(""), nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := New("summaries", &test_utils.MockBinder{Data: tc.data, Err: tc.err})
+			if got := store.LoadCast(context.Background(), "22"); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadCastReadsTheCampaignsOwnKey(t *testing.T) {
+	binder := &test_utils.MockBinder{Data: []byte(`{}`)}
+	New("summaries", binder).LoadCast(context.Background(), "22")
+
+	if len(binder.Calls) != 1 {
+		t.Fatalf("expected one call, got %d", len(binder.Calls))
+	}
+	if got := binder.Calls[0].Metadata["key"]; got != "campaigns/22/cast.json" {
+		t.Fatalf("read %q", got)
+	}
+	if got := binder.Calls[0].Operation; got != "get" {
+		t.Fatalf("operation %q", got)
+	}
+}
+
+type errNotFound struct{}
+
+func (errNotFound) Error() string { return "the key does not exist" }
