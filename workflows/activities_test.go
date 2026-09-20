@@ -306,7 +306,8 @@ func TestWriteEpisodeSummaryDatesTheEpisodeFromItsRecording(t *testing.T) {
 	previous := deps
 	agent := &mockAgent{}
 	audio := &mockAudioStore{recordedAt: time.Date(2026, 1, 5, 22, 5, 18, 0, time.UTC)}
-	deps = Deps{Audio: audio, Agent: agent, Summaries: &mockSummaries{}}
+	deps = Deps{Audio: audio, Agent: agent, Summaries: &mockSummaries{},
+		Sessions: &test_utils.MockSessionLookup{}}
 	t.Cleanup(func() { deps = previous })
 
 	_, err := WriteEpisodeSummary(&fakeActivityContext{input: episodeSummaryRequest{
@@ -337,6 +338,7 @@ func TestWriteEpisodeSummarySurvivesAnUndatableRecording(t *testing.T) {
 		Audio:     &mockAudioStore{recordedAtErr: errors.New("not in the bucket")},
 		Agent:     agent,
 		Summaries: &mockSummaries{},
+		Sessions:  &test_utils.MockSessionLookup{DateErr: session_lookup.ErrSessionNotReady},
 	}
 	t.Cleanup(func() { deps = previous })
 
@@ -357,7 +359,8 @@ func TestWriteEpisodeSummarySurvivesAnUndatableRecording(t *testing.T) {
 func TestWriteEpisodeSummaryWithNoKeysDoesNotAskForADate(t *testing.T) {
 	previous := deps
 	audio := &mockAudioStore{}
-	deps = Deps{Audio: audio, Agent: &mockAgent{}, Summaries: &mockSummaries{}}
+	deps = Deps{Audio: audio, Agent: &mockAgent{}, Summaries: &mockSummaries{},
+		Sessions: &test_utils.MockSessionLookup{DateErr: session_lookup.ErrSessionNotReady}}
 	t.Cleanup(func() { deps = previous })
 
 	if _, err := WriteEpisodeSummary(&fakeActivityContext{input: episodeSummaryRequest{
@@ -367,5 +370,92 @@ func TestWriteEpisodeSummaryWithNoKeysDoesNotAskForADate(t *testing.T) {
 	}
 	if len(audio.dated) != 0 {
 		t.Fatalf("asked to date %v with no keys", audio.dated)
+	}
+}
+
+// Campaign 22's first two episodes: recorded in 2023, summarized now, and their
+// audio long since pruned from the bucket. Undated they would be stamped at
+// ingestion -- i.e. today -- which puts the campaign's oldest sessions after its
+// newest ones and hands every contradiction to the wrong episode. The session
+// row still carries the play date someone typed during the backfill.
+func TestWriteEpisodeSummaryFallsBackToTheSessionRow(t *testing.T) {
+	previous := deps
+	agent := &mockAgent{}
+	sessions := &test_utils.MockSessionLookup{
+		Date: time.Date(2023, 2, 18, 0, 0, 0, 0, time.UTC),
+	}
+	deps = Deps{
+		Audio:     &mockAudioStore{recordedAtErr: errors.New("not in the bucket")},
+		Agent:     agent,
+		Summaries: &mockSummaries{},
+		Sessions:  sessions,
+	}
+	t.Cleanup(func() { deps = previous })
+
+	if _, err := WriteEpisodeSummary(&fakeActivityContext{input: episodeSummaryRequest{
+		CampaignId: "22", EpisodeId: "1", AudioKeys: []string{"1.ogg"},
+	}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if agent.recordedAt != "2023-02-18T00:00:00Z" {
+		t.Fatalf("got %q", agent.recordedAt)
+	}
+	if len(sessions.DateArgs) != 1 || sessions.DateArgs[0] != [2]int{22, 1} {
+		t.Fatalf("looked up %v", sessions.DateArgs)
+	}
+}
+
+// The bucket is the trustworthy source when it can answer, so the database is
+// not consulted at all -- createdAt trails the recording and for a live episode
+// the row may not even exist yet.
+func TestWriteEpisodeSummaryPrefersTheBucketOverTheDatabase(t *testing.T) {
+	previous := deps
+	agent := &mockAgent{}
+	sessions := &test_utils.MockSessionLookup{
+		Date: time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	deps = Deps{
+		Audio:     &mockAudioStore{recordedAt: time.Date(2026, 1, 5, 22, 5, 18, 0, time.UTC)},
+		Agent:     agent,
+		Summaries: &mockSummaries{},
+		Sessions:  sessions,
+	}
+	t.Cleanup(func() { deps = previous })
+
+	if _, err := WriteEpisodeSummary(&fakeActivityContext{input: episodeSummaryRequest{
+		CampaignId: "22", EpisodeId: "4", AudioKeys: []string{"155111112.ogg"},
+	}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if agent.recordedAt != "2026-01-05T22:05:18Z" {
+		t.Fatalf("got %q", agent.recordedAt)
+	}
+	if len(sessions.DateArgs) != 0 {
+		t.Fatalf("asked the database despite having the object: %v", sessions.DateArgs)
+	}
+}
+
+// The hand-set override is for the case where the operator knows something
+// neither lookup does, so it beats both without consulting either.
+func TestWriteEpisodeSummaryHonoursTheCallerSuppliedDate(t *testing.T) {
+	previous := deps
+	agent := &mockAgent{}
+	audio := &mockAudioStore{recordedAt: time.Date(2026, 1, 5, 22, 5, 18, 0, time.UTC)}
+	sessions := &test_utils.MockSessionLookup{}
+	deps = Deps{Audio: audio, Agent: agent, Summaries: &mockSummaries{}, Sessions: sessions}
+	t.Cleanup(func() { deps = previous })
+
+	if _, err := WriteEpisodeSummary(&fakeActivityContext{input: episodeSummaryRequest{
+		CampaignId: "22", EpisodeId: "1",
+		AudioKeys:  []string{"155111112.ogg"},
+		RecordedAt: "2023-02-18T00:00:00Z",
+	}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if agent.recordedAt != "2023-02-18T00:00:00Z" {
+		t.Fatalf("got %q", agent.recordedAt)
+	}
+	if len(audio.dated) != 0 || len(sessions.DateArgs) != 0 {
+		t.Fatalf("consulted a lookup despite being told the date")
 	}
 }

@@ -47,6 +47,16 @@ type EpisodeInput struct {
 	TranscriptionIds []string `json:"transcriptionIds"`
 	// Single-task form of TranscriptionIds, for the common one-chunk case.
 	TranscriptionId string `json:"transcriptionId"`
+	// When the session was played, RFC3339. Optional, and normally left empty:
+	// the recording's own date is more trustworthy than anything a caller
+	// types, and it is what the pipeline uses.
+	//
+	// It exists for the case the pipeline cannot answer -- re-summarizing an
+	// archived episode whose recording has been pruned from the bucket. Without
+	// it such an episode is stamped at ingestion, which puts the campaign's
+	// oldest sessions *after* its newest ones in the graph's chronology and
+	// hands every contradiction to the wrong episode.
+	RecordedAt string `json:"recordedAt"`
 	// Keys of the cooked audio in the recordings bucket, in recording order.
 	//
 	// There is usually one, but not always: Pandora opens a new record every

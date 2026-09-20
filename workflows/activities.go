@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,9 +48,11 @@ type episodeSummaryRequest struct {
 	EpisodeId  string             `json:"episodeId"`
 	Lines      []storyteller.Line `json:"lines"`
 	// Recordings this episode was transcribed from, in order. Carried only so
-	// the activity can date the session from the first one; a caller that
-	// supplied task ids and no keys simply gets an undated episode.
+	// the activity can date the session from the first one.
 	AudioKeys []string `json:"audioKeys"`
+	// Caller-supplied play date, RFC3339. Wins over both lookups below when
+	// set; see EpisodeInput.RecordedAt for why it exists.
+	RecordedAt string `json:"recordedAt"`
 }
 
 type campaignSummaryRequest struct {
@@ -200,28 +203,57 @@ func WriteEpisodeSummary(ctx workflow.ActivityContext) (any, error) {
 	}
 	cast := deps.Summaries.LoadCast(ctx.Context(), in.CampaignId)
 	return deps.Agent.SummarizeEpisode(ctx.Context(), in.CampaignId, in.EpisodeId,
-		in.Lines, cast, recordedAt(ctx, in.AudioKeys))
+		in.Lines, cast, recordedAt(ctx, in))
 }
 
-// recordedAt dates the session from its first recording, or returns "" when it
-// cannot be dated at all.
+// recordedAt establishes when the session was played, or returns "" when
+// nothing can answer.
 //
-// The first key, not the last: a session that dropped and resumed comes back as
-// consecutive chunks, and the episode belongs at the moment it started rather
-// than at whichever reconnect happened to be final.
+// Three sources, most trustworthy first:
+//
+//  1. What the caller said. Only ever set by hand, and only when the two below
+//     are known to be unable to answer, so it wins outright.
+//  2. The recording's own last-modified date. The normal path: cooking-server
+//     writes the object minutes after the table breaks up. The first key, not
+//     the last -- a session that dropped and resumed comes back as consecutive
+//     chunks, and the episode belongs at the moment it started.
+//  3. The session row's createdAt. For a normal episode this is the same
+//     evening, minutes later; for one backfilled by hand it is the play date
+//     someone typed. It is third rather than unused because the object can be
+//     pruned while the row survives -- campaign 22's first two episodes are
+//     exactly that, dated 2023 with no audio left in the bucket.
 //
 // Never fails the activity. WriteEpisodeSummary runs under noRetry because it
-// writes to the knowledge graph, so anything that returns an error here costs
-// the episode its chapter outright -- for a field whose absence only restores
-// the behaviour every previously stored episode already has.
-func recordedAt(ctx workflow.ActivityContext, keys []string) string {
-	if len(keys) == 0 {
+// writes to the knowledge graph, so an error here would cost the episode its
+// chapter outright -- for a field whose absence only restores the behaviour
+// every previously stored episode already has.
+func recordedAt(ctx workflow.ActivityContext, in episodeSummaryRequest) string {
+	if supplied := strings.TrimSpace(in.RecordedAt); supplied != "" {
+		return supplied
+	}
+
+	if len(in.AudioKeys) > 0 {
+		when, err := deps.Audio.RecordedAt(ctx.Context(), in.AudioKeys[0])
+		if err == nil {
+			return when.UTC().Format(time.RFC3339)
+		}
+		slog.Info(fmt.Sprintf("[WriteEpisodeSummary] :: cannot date %s from the bucket (%s), "+
+			"falling back to the session row", in.AudioKeys[0], err))
+	}
+
+	// Numeric ids everywhere else in this workflow; the strings here are only
+	// what the agent's wire format wants. A non-numeric one cannot key the
+	// session table, so there is nothing to look up.
+	campaignId, campaignErr := strconv.Atoi(in.CampaignId)
+	episodeId, episodeErr := strconv.Atoi(in.EpisodeId)
+	if campaignErr != nil || episodeErr != nil {
 		return ""
 	}
-	when, err := deps.Audio.RecordedAt(ctx.Context(), keys[0])
+
+	when, err := deps.Sessions.SessionDate(ctx.Context(), campaignId, episodeId)
 	if err != nil {
-		slog.Info(fmt.Sprintf("[WriteEpisodeSummary] :: cannot date %s (%s), "+
-			"the episode will be stamped at ingestion", keys[0], err))
+		slog.Info(fmt.Sprintf("[WriteEpisodeSummary] :: no date for campaign %d episode %d (%s), "+
+			"the episode will be stamped at ingestion", campaignId, episodeId, err))
 		return ""
 	}
 	return when.UTC().Format(time.RFC3339)
