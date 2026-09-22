@@ -36,6 +36,11 @@ type SummaryStore interface {
 	// SaveTranscript archives the transcript an episode was written from and
 	// returns its key.
 	SaveTranscript(ctx context.Context, t Transcript) (string, error)
+	// LoadTranscripts returns every transcript archived for a campaign.
+	// Drafting a cast draws on cross-episode evidence -- a speaker label means
+	// nothing outside the episode it came from -- so it needs all of them, not
+	// just the one just written.
+	LoadTranscripts(ctx context.Context, campaignId string) ([]Transcript, error)
 	// CampaignKey is where a campaign summary lives, whether or not one has
 	// been written yet.
 	CampaignKey(campaignId string) string
@@ -43,4 +48,7 @@ type SummaryStore interface {
 	// it has none. Never fails: a cast improves a summary, it is not required
 	// for one.
 	LoadCast(ctx context.Context, campaignId string) string
+	// SaveCast stores a campaign's cast list -- drafted or corrected by hand --
+	// and returns its key.
+	SaveCast(ctx context.Context, campaignId, cast string) (string, error)
 }

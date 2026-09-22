@@ -280,7 +280,10 @@ func TestFetchTranscriptionFallsBackToDiarization(t *testing.T) {
 
 // mockAgent records what reached the A2A client.
 type mockAgent struct {
-	recordedAt string
+	recordedAt      string
+	castTranscripts []json.RawMessage
+	castResult      string
+	castErr         error
 }
 
 func (m *mockAgent) SummarizeEpisode(_ context.Context, _, _ string, _ []storyteller.Line, _, recordedAt string) (string, error) {
@@ -293,6 +296,11 @@ func (m *mockAgent) SummarizeCampaign(_ context.Context, _, _ string) (string, e
 }
 
 func (m *mockAgent) Gist(_ context.Context, _, _, _ string) (string, error) { return "Gist.", nil }
+
+func (m *mockAgent) DraftCast(_ context.Context, _ string, transcripts []json.RawMessage) (string, error) {
+	m.castTranscripts = transcripts
+	return m.castResult, m.castErr
+}
 
 // mockSummaries supplies the cast the activity fetches at the point of use.
 type mockSummaries struct{ summary_store.SummaryStore }
@@ -457,5 +465,158 @@ func TestWriteEpisodeSummaryHonoursTheCallerSuppliedDate(t *testing.T) {
 	}
 	if len(audio.dated) != 0 || len(sessions.DateArgs) != 0 {
 		t.Fatalf("consulted a lookup despite being told the date")
+	}
+}
+
+// fakeCastStore is a small hand-rolled SummaryStore for exercising DraftCast's
+// gating logic. Embedding the interface means every method DraftCast does not
+// call panics if it is ever reached by mistake, rather than degrading silently.
+type fakeCastStore struct {
+	summary_store.SummaryStore
+	cast        string
+	transcripts []summary_store.Transcript
+	transErr    error
+	saved       string
+	saveErr     error
+}
+
+func (f *fakeCastStore) LoadCast(_ context.Context, _ string) string { return f.cast }
+
+func (f *fakeCastStore) LoadTranscripts(_ context.Context, _ string) ([]summary_store.Transcript, error) {
+	return f.transcripts, f.transErr
+}
+
+func (f *fakeCastStore) SaveCast(_ context.Context, _, cast string) (string, error) {
+	f.saved = cast
+	if f.saveErr != nil {
+		return "", f.saveErr
+	}
+	return "campaigns/28/cast.json", nil
+}
+
+func threeTranscripts() []summary_store.Transcript {
+	return []summary_store.Transcript{
+		{CampaignId: "28", EpisodeId: "1"},
+		{CampaignId: "28", EpisodeId: "2"},
+		{CampaignId: "28", EpisodeId: "3"},
+	}
+}
+
+// Drafted from one or two episodes, every signal in marlin's drafter comes
+// back "unknown" -- see MIN_CAST_EPISODES in marlin/pipeline.py -- so calling
+// the agent below that count would only ever produce an empty file.
+func TestDraftCastSkipsBelowMinimumEpisodes(t *testing.T) {
+	previous := deps
+	agent := &mockAgent{castResult: `{"generated":true}`}
+	store := &fakeCastStore{transcripts: threeTranscripts()[:2]}
+	deps = Deps{Agent: agent, Summaries: store}
+	t.Cleanup(func() { deps = previous })
+
+	got, err := DraftCast(&fakeActivityContext{input: draftCastRequest{CampaignId: "28"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("expected no key, got %v", got)
+	}
+	if agent.castTranscripts != nil {
+		t.Fatal("must not call the agent below the episode threshold")
+	}
+}
+
+// A cast with no "generated" key was written by a human, not this activity --
+// campaign 22's is exactly that. Overwriting it would destroy curation work
+// the drafter has no way to reconstruct.
+func TestDraftCastLeavesACuratedCastAlone(t *testing.T) {
+	previous := deps
+	agent := &mockAgent{castResult: `{"generated":true}`}
+	store := &fakeCastStore{cast: `{"characters":[{"name":"Kit"}]}`, transcripts: threeTranscripts()}
+	deps = Deps{Agent: agent, Summaries: store}
+	t.Cleanup(func() { deps = previous })
+
+	if _, err := DraftCast(&fakeActivityContext{input: draftCastRequest{CampaignId: "28"}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if agent.castTranscripts != nil {
+		t.Fatal("must not redraft a hand-curated cast")
+	}
+	if store.saved != "" {
+		t.Fatal("must not overwrite a hand-curated cast")
+	}
+}
+
+// generated:false is how a human freezes a draft after correcting it -- the
+// note the drafter writes says so explicitly. Redrafting over that would
+// silently discard the correction on the very next episode.
+func TestDraftCastLeavesAFrozenDraftAlone(t *testing.T) {
+	previous := deps
+	agent := &mockAgent{castResult: `{"generated":true}`}
+	store := &fakeCastStore{cast: `{"generated":false,"characters":[]}`, transcripts: threeTranscripts()}
+	deps = Deps{Agent: agent, Summaries: store}
+	t.Cleanup(func() { deps = previous })
+
+	if _, err := DraftCast(&fakeActivityContext{input: draftCastRequest{CampaignId: "28"}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if store.saved != "" {
+		t.Fatal("must not overwrite a frozen draft")
+	}
+}
+
+// The normal case: no cast yet, enough episodes archived. This is the whole
+// point of the feature -- a human corrects a draft instead of starting from
+// nothing.
+func TestDraftCastWritesTheFirstDraft(t *testing.T) {
+	previous := deps
+	agent := &mockAgent{castResult: `{"generated":true,"characters":[{"name":"Kit"}]}`}
+	store := &fakeCastStore{transcripts: threeTranscripts()}
+	deps = Deps{Agent: agent, Summaries: store}
+	t.Cleanup(func() { deps = previous })
+
+	got, err := DraftCast(&fakeActivityContext{input: draftCastRequest{CampaignId: "28"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "campaigns/28/cast.json" {
+		t.Fatalf("got %v", got)
+	}
+	if len(agent.castTranscripts) != 3 {
+		t.Fatalf("expected all 3 transcripts sent, got %d", len(agent.castTranscripts))
+	}
+	if store.saved != `{"generated":true,"characters":[{"name":"Kit"}]}` {
+		t.Fatalf("saved %q", store.saved)
+	}
+}
+
+// generated:true is the flag that keeps a draft eligible for a refresh as
+// later episodes arrive -- until a human corrects it and flips it to false.
+func TestDraftCastRedraftsWhileStillFlaggedGenerated(t *testing.T) {
+	previous := deps
+	agent := &mockAgent{castResult: `{"generated":true,"characters":[{"name":"Kit"},{"name":"Seth"}]}`}
+	store := &fakeCastStore{cast: `{"generated":true,"characters":[{"name":"Kit"}]}`, transcripts: threeTranscripts()}
+	deps = Deps{Agent: agent, Summaries: store}
+	t.Cleanup(func() { deps = previous })
+
+	if _, err := DraftCast(&fakeActivityContext{input: draftCastRequest{CampaignId: "28"}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if agent.castTranscripts == nil {
+		t.Fatal("expected the agent to be asked for a fresh draft")
+	}
+	if store.saved == `{"generated":true,"characters":[{"name":"Kit"}]}` {
+		t.Fatal("expected the redrafted cast to be saved, not the old one")
+	}
+}
+
+// A listing failure must wait out like any other transient sidecar blip, not
+// be mistaken for "no transcripts yet".
+func TestDraftCastFailsOnAListingError(t *testing.T) {
+	previous := deps
+	store := &fakeCastStore{transErr: errors.New("sidecar down")}
+	deps = Deps{Agent: &mockAgent{}, Summaries: store}
+	t.Cleanup(func() { deps = previous })
+
+	if _, err := DraftCast(&fakeActivityContext{input: draftCastRequest{CampaignId: "28"}}); err == nil {
+		t.Fatal("expected an error when the transcripts cannot be listed")
 	}
 }

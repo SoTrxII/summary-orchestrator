@@ -3,10 +3,13 @@ package summary_store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"summary-orchestrator/pkg/storyteller"
 	test_utils "summary-orchestrator/test-utils"
+
+	"github.com/dapr/go-sdk/client"
 )
 
 // The transcript is archived so an episode can be summarized again without
@@ -110,3 +113,100 @@ func TestLoadCastReadsTheCampaignsOwnKey(t *testing.T) {
 type errNotFound struct{}
 
 func (errNotFound) Error() string { return "the key does not exist" }
+
+// SaveCast is used for both a human's corrected file and the automatic draft;
+// it just puts bytes at the campaign's own key either way.
+func TestSaveCastWritesTheCampaignsOwnKey(t *testing.T) {
+	binder := &test_utils.MockBinder{}
+	key, err := New("summaries", binder).SaveCast(context.Background(), "28", `{"characters":[]}`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if key != "campaigns/28/cast.json" {
+		t.Fatalf("got %q", key)
+	}
+	if len(binder.Calls) != 1 || binder.Calls[0].Operation != "create" {
+		t.Fatalf("expected one create call, got %+v", binder.Calls)
+	}
+	if got := binder.Calls[0].Metadata["key"]; got != key {
+		t.Fatalf("wrote to %q", got)
+	}
+}
+
+// sequencedBinder answers each call from a fixed script, in order -- unlike
+// MockBinder, which always returns the same response. LoadTranscripts makes
+// one "list" call followed by one "get" per transcript found, and each of
+// those needs its own canned answer.
+type sequencedBinder struct {
+	responses []testBinderResponse
+	calls     []*client.InvokeBindingRequest
+}
+
+type testBinderResponse struct {
+	data []byte
+	err  error
+}
+
+func (s *sequencedBinder) InvokeBinding(_ context.Context, in *client.InvokeBindingRequest) (*client.BindingEvent, error) {
+	i := len(s.calls)
+	s.calls = append(s.calls, in)
+	if i >= len(s.responses) {
+		return nil, fmt.Errorf("no scripted response for call %d", i)
+	}
+	r := s.responses[i]
+	if r.err != nil {
+		return nil, r.err
+	}
+	return &client.BindingEvent{Data: r.data}, nil
+}
+
+// Drafting a cast needs every episode's transcript, not just the one just
+// written, because the drafter votes across episodes.
+func TestLoadTranscriptsReadsEveryArchivedEpisode(t *testing.T) {
+	list := `{"Contents":[
+		{"Key":"campaigns/28/episodes/1/transcript.json"},
+		{"Key":"campaigns/28/episodes/1/summary.json"},
+		{"Key":"campaigns/28/episodes/2/transcript.json"}
+	]}`
+	t1 := `{"campaignId":"28","episodeId":"1","lines":[{"speaker":"A","text":"Bonjour."}]}`
+	t2 := `{"campaignId":"28","episodeId":"2","lines":[{"speaker":"B","text":"Salut."}]}`
+
+	binder := &sequencedBinder{responses: []testBinderResponse{
+		{data: []byte(list)},
+		{data: []byte(t1)},
+		{data: []byte(t2)},
+	}}
+	transcripts, err := New("summaries", binder).LoadTranscripts(context.Background(), "28")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(transcripts) != 2 {
+		t.Fatalf("expected 2 transcripts (summary.json excluded), got %d", len(transcripts))
+	}
+	if transcripts[0].EpisodeId != "1" || transcripts[1].EpisodeId != "2" {
+		t.Fatalf("got %+v", transcripts)
+	}
+	if binder.calls[0].Operation != "list" {
+		t.Fatalf("expected the first call to list, got %q", binder.calls[0].Operation)
+	}
+}
+
+// One corrupt archive must not cost the draft every other episode's evidence.
+func TestLoadTranscriptsSkipsAnUnreadableOne(t *testing.T) {
+	list := `{"Contents":[
+		{"Key":"campaigns/28/episodes/1/transcript.json"},
+		{"Key":"campaigns/28/episodes/2/transcript.json"}
+	]}`
+	binder := &sequencedBinder{responses: []testBinderResponse{
+		{data: []byte(list)},
+		{err: errNotFound{}},
+		{data: []byte(`{"campaignId":"28","episodeId":"2","lines":[]}`)},
+	}}
+	transcripts, err := New("summaries", binder).LoadTranscripts(context.Background(), "28")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(transcripts) != 1 || transcripts[0].EpisodeId != "2" {
+		t.Fatalf("got %+v", transcripts)
+	}
+}

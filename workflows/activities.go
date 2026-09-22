@@ -1,6 +1,7 @@
 package workflows
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,6 +16,13 @@ import (
 
 	"github.com/dapr/durabletask-go/workflow"
 )
+
+// minCastEpisodes mirrors marlin's MIN_CAST_EPISODES. Every signal the
+// drafter uses is cross-episode -- who answers to a name is a vote across
+// episodes, an NPC is recognised by recurring in several -- so fewer
+// transcripts than this makes every name come back "unknown" and the draft
+// say nothing.
+const minCastEpisodes = 3
 
 type presignRequest struct {
 	Key string `json:"key"`
@@ -56,6 +64,10 @@ type episodeSummaryRequest struct {
 }
 
 type campaignSummaryRequest struct {
+	CampaignId string `json:"campaignId"`
+}
+
+type draftCastRequest struct {
 	CampaignId string `json:"campaignId"`
 }
 
@@ -131,6 +143,55 @@ func StoreTranscript(ctx workflow.ActivityContext) (any, error) {
 		TranscriptionIds: in.TranscriptionIds,
 		Lines:            in.Lines,
 	})
+}
+
+// DraftCast counts a first-pass cast off the campaign's archived transcripts
+// and stores it, so a human corrects a draft instead of writing one from
+// scratch.
+//
+// It only ever touches a cast it wrote itself. A file with no "generated"
+// flag was curated by hand and one with "generated":false has been frozen by
+// whoever corrected the draft -- both mean "leave this alone" here, which is
+// why an unreadable existing file also takes that branch rather than being
+// treated as absent: overwriting a half-edited cast on a parse failure would
+// be worse than skipping a redraft.
+func DraftCast(ctx workflow.ActivityContext) (any, error) {
+	var in draftCastRequest
+	if err := ctx.GetInput(&in); err != nil {
+		return nil, err
+	}
+
+	if current := deps.Summaries.LoadCast(ctx.Context(), in.CampaignId); current != "" {
+		var flag struct {
+			Generated *bool `json:"generated"`
+		}
+		if err := json.Unmarshal([]byte(current), &flag); err != nil || flag.Generated == nil || !*flag.Generated {
+			return "", nil
+		}
+	}
+
+	transcripts, err := deps.Summaries.LoadTranscripts(ctx.Context(), in.CampaignId)
+	if err != nil {
+		return nil, fmt.Errorf("listing transcripts: %w", err)
+	}
+	if len(transcripts) < minCastEpisodes {
+		return "", nil
+	}
+
+	raw := make([]json.RawMessage, 0, len(transcripts))
+	for _, t := range transcripts {
+		b, err := json.Marshal(t)
+		if err != nil {
+			continue
+		}
+		raw = append(raw, b)
+	}
+
+	draft, err := deps.Agent.DraftCast(ctx.Context(), in.CampaignId, raw)
+	if err != nil {
+		return nil, fmt.Errorf("drafting cast: %w", err)
+	}
+	return deps.Summaries.SaveCast(ctx.Context(), in.CampaignId, draft)
 }
 
 // FetchTranscription collects the diarized transcript, or reports that it is

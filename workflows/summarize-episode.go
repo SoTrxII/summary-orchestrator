@@ -138,6 +138,21 @@ func SummarizeEpisode(ctx *workflow.WorkflowContext) (any, error) {
 		log(fmt.Sprintf("transcript archived at %s", transcriptKey))
 	}
 
+	// Once there is enough evidence, (re)draft the campaign's cast so this
+	// episode's own chapter -- and, below, the campaign narrative -- already
+	// benefit from it. Skipped by the activity itself once a human has frozen
+	// the file or written one by hand; a failure here costs a nice-to-have,
+	// never the chapter, so it is logged and swallowed like the archive above.
+	var castKey string
+	if err := ctx.CallActivity(DraftCast,
+		workflow.WithActivityInput(draftCastRequest{CampaignId: in.campaign()}),
+		workflow.WithActivityRetryPolicy(transientRetry),
+	).Await(&castKey); err != nil {
+		log(fmt.Sprintf("could not draft the cast: %s", err))
+	} else if castKey != "" {
+		log(fmt.Sprintf("cast drafted at %s", castKey))
+	}
+
 	// 3. The agent writes the chapter and stores it in the knowledge graph.
 	var episodeSummary string
 	if err := ctx.CallActivity(WriteEpisodeSummary,

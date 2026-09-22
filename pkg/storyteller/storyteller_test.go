@@ -2,6 +2,7 @@ package storyteller
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -128,6 +129,33 @@ func TestEpisodeEnvelope(t *testing.T) {
 		`Episode: 04`,
 		`[CONTENU]`,
 		`{\"speaker\":\"Alice\",\"text\":\"Bonjour\"}`,
+	} {
+		if !strings.Contains(*body, want) {
+			t.Fatalf("envelope is missing %q, got %s", want, *body)
+		}
+	}
+}
+
+// The casting task carries no per-episode markers -- unlike an episode
+// message, the agent does not need to know where one transcript ends and the
+// next begins, since draft_cast re-parses each array element on its own.
+func TestCastEnvelope(t *testing.T) {
+	agent, _, body := agentServing(t, `{"jsonrpc":"2.0","id":"1","result":{"task":{
+		"artifacts":[{"parts":[{"text":"{}"}]}]}}}`)
+
+	transcripts := []json.RawMessage{
+		json.RawMessage(`{"episodeId":"1","lines":[]}`),
+		json.RawMessage(`{"episodeId":"2","lines":[]}`),
+	}
+	if _, err := agent.DraftCast(context.Background(), "28", transcripts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{
+		`Tâche: casting`,
+		`Campagne: 28`,
+		`[CONTENU]`,
+		`{\"episodeId\":\"1\"`,
+		`{\"episodeId\":\"2\"`,
 	} {
 		if !strings.Contains(*body, want) {
 			t.Fatalf("envelope is missing %q, got %s", want, *body)

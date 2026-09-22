@@ -136,6 +136,7 @@ func Register(r *workflow.Registry, d Deps) error {
 		StartTranscription,
 		FetchTranscription,
 		StoreTranscript,
+		DraftCast,
 		WriteEpisodeSummary,
 		StoreEpisodeSummary,
 		WriteCampaignSummary,

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 
 	"summary-orchestrator/internal/utils"
 
@@ -111,6 +113,90 @@ func (s *DaprSummaryStore) SaveTranscript(ctx context.Context, t Transcript) (st
 		return "", err
 	}
 	return key, nil
+}
+
+// listedObject is the part of the S3 binding's "list" answer LoadTranscripts
+// reads. Same binding shape as audio-store's RecordedAt: the field names are
+// the SDK's ListObjectsV2Output, capitalised.
+type listedObject struct {
+	Key string `json:"Key"`
+}
+
+type listResponse struct {
+	Contents []listedObject `json:"Contents"`
+}
+
+// transcriptsPrefix is where a campaign's episodes live in the bucket.
+func transcriptsPrefix(campaignId string) string {
+	return fmt.Sprintf("campaigns/%s/episodes/", campaignId)
+}
+
+// LoadTranscripts reads back every transcript archived for a campaign.
+//
+// Sorted by key for a stable order, not by episode number -- lexicographic
+// sort puts episode 10 before episode 2, but drafting a cast votes on each
+// episode independently (see marlin.cast.draft_cast), so the order they
+// arrive in makes no difference to the result. Unlike ingesting a campaign
+// into Graphiti, nothing here is order-sensitive.
+//
+// A transcript that fails to read or parse is skipped rather than failing the
+// whole call: one corrupt archive must not cost the draft every other
+// episode's evidence.
+func (s *DaprSummaryStore) LoadTranscripts(ctx context.Context, campaignId string) ([]Transcript, error) {
+	prefix := transcriptsPrefix(campaignId)
+	payload, err := json.Marshal(map[string]any{"prefix": prefix, "maxResults": 1000})
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.client.InvokeBinding(ctx, &client.InvokeBindingRequest{
+		Name:      s.componentName,
+		Operation: "list",
+		Data:      payload,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing %s: %w", prefix, err)
+	}
+
+	var listed listResponse
+	if err := json.Unmarshal(res.Data, &listed); err != nil {
+		return nil, fmt.Errorf("listing %s: unreadable response: %w", prefix, err)
+	}
+
+	keys := make([]string, 0, len(listed.Contents))
+	for _, o := range listed.Contents {
+		if strings.HasSuffix(o.Key, "/transcript.json") {
+			keys = append(keys, o.Key)
+		}
+	}
+	sort.Strings(keys)
+
+	transcripts := make([]Transcript, 0, len(keys))
+	for _, key := range keys {
+		res, err := s.client.InvokeBinding(ctx, &client.InvokeBindingRequest{
+			Name:      s.componentName,
+			Operation: "get",
+			Metadata:  map[string]string{"key": key},
+		})
+		if err != nil {
+			slog.Warn(fmt.Sprintf("[SummaryStore] :: could not read %s, skipping it (%s)", key, err))
+			continue
+		}
+		var t Transcript
+		if err := json.Unmarshal(res.Data, &t); err != nil {
+			slog.Warn(fmt.Sprintf("[SummaryStore] :: %s is not a valid transcript, skipping it (%s)", key, err))
+			continue
+		}
+		transcripts = append(transcripts, t)
+	}
+	return transcripts, nil
+}
+
+// SaveCast stores a campaign's cast list. Used both for a human's corrected
+// file and for the automatic draft -- the caller decides which one it is
+// writing, this just puts bytes at the key.
+func (s *DaprSummaryStore) SaveCast(ctx context.Context, campaignId, cast string) (string, error) {
+	key := CastKey(campaignId)
+	return key, s.put(ctx, key, []byte(cast))
 }
 
 func (s *DaprSummaryStore) save(ctx context.Context, key string, payload storedSummary) error {

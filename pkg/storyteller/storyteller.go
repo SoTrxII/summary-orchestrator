@@ -97,6 +97,19 @@ func (a *A2A) Gist(ctx context.Context, campaignId, episodeId, summary string) (
 		campaignId, episodeId, summary))
 }
 
+// DraftCast asks the agent to count a first-pass cast off the campaign's
+// transcripts. The whole campaign goes in one call rather than one per
+// episode: a speaker label means nothing outside the episode it came from, so
+// who answers to a name is settled by a vote across episodes, not within one.
+func (a *A2A) DraftCast(ctx context.Context, campaignId string, transcripts []json.RawMessage) (string, error) {
+	content, err := json.Marshal(transcripts)
+	if err != nil {
+		return "", err
+	}
+	return a.send(ctx, fmt.Sprintf(
+		"Tâche: casting\nCampagne: %s\n[CONTENU]\n%s", campaignId, content))
+}
+
 type agentEntry struct {
 	AgentId   string `json:"agent_id"`
 	AgentName string `json:"agent_name"`

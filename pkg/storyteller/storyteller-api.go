@@ -1,6 +1,9 @@
 package storyteller
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // Line is one turn of dialogue, in the shape the agent expects as episode
 // content.
@@ -27,4 +30,13 @@ type Storyteller interface {
 	SummarizeCampaign(ctx context.Context, campaignId string, cast string) (string, error)
 	// Gist condenses an episode summary into the short form shown in Discord.
 	Gist(ctx context.Context, campaignId, episodeId, summary string) (string, error)
+	// DraftCast counts a first-pass cast off the campaign's already-archived
+	// transcripts, for a human to correct afterward. Pure computation on the
+	// agent's side -- no model call, no graph -- so it costs nothing extra to
+	// run speculatively once there is enough evidence.
+	//
+	// transcripts are raw, in the shape SummaryStore archived them (see
+	// summary_store.Transcript) -- passed through untouched rather than typed
+	// here, so this package does not need to depend on that one's shape.
+	DraftCast(ctx context.Context, campaignId string, transcripts []json.RawMessage) (string, error)
 }
