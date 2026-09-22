@@ -17,12 +17,12 @@ import (
 	"github.com/dapr/durabletask-go/workflow"
 )
 
-// minCastEpisodes mirrors marlin's MIN_CAST_EPISODES. Every signal the
-// drafter uses is cross-episode -- who answers to a name is a vote across
-// episodes, an NPC is recognised by recurring in several -- so fewer
-// transcripts than this makes every name come back "unknown" and the draft
-// say nothing.
-const minCastEpisodes = 3
+// minCastEpisodes mirrors marlin's MIN_CAST_EPISODES: the drafter scales its
+// own PC/NPC confidence bar down to however many episodes actually exist, so
+// one is enough for a real verdict -- otherwise a one-shot's cast.json would
+// never get a second episode to clear a higher bar and would sit unclassified
+// forever.
+const minCastEpisodes = 1
 
 type presignRequest struct {
 	Key string `json:"key"`

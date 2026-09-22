@@ -502,13 +502,15 @@ func threeTranscripts() []summary_store.Transcript {
 	}
 }
 
-// Drafted from one or two episodes, every signal in marlin's drafter comes
-// back "unknown" -- see MIN_CAST_EPISODES in marlin/pipeline.py -- so calling
-// the agent below that count would only ever produce an empty file.
-func TestDraftCastSkipsBelowMinimumEpisodes(t *testing.T) {
+// Nothing archived yet means nothing to draft from -- distinct from "one
+// episode", which marlin's drafter can already classify from (see
+// MIN_CAST_EPISODES in marlin/pipeline.py: it scales its own confidence bar
+// down to however many episodes exist, precisely so a one-shot's single
+// episode still gets a real verdict instead of never clearing a fixed bar).
+func TestDraftCastSkipsWithNoTranscriptsArchivedYet(t *testing.T) {
 	previous := deps
 	agent := &mockAgent{castResult: `{"generated":true}`}
-	store := &fakeCastStore{transcripts: threeTranscripts()[:2]}
+	store := &fakeCastStore{}
 	deps = Deps{Agent: agent, Summaries: store}
 	t.Cleanup(func() { deps = previous })
 
