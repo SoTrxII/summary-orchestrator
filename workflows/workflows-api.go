@@ -57,6 +57,19 @@ type EpisodeInput struct {
 	// oldest sessions *after* its newest ones in the graph's chronology and
 	// hands every contradiction to the wrong episode.
 	RecordedAt string `json:"recordedAt"`
+	// Key of a transcript that already exists in the summaries bucket. Set it
+	// to summarize from that instead of transcribing anything at all.
+	//
+	// This is how a campaign predating the current pipeline gets summarized.
+	// The bucket holds 252 transcripts the pre-2026 summarizer wrote under
+	// <campaign>/<episode>/transcript.json, and for 191 of them the recording
+	// has since been pruned -- so this is not an optimisation for those, it is
+	// the only way they can ever be summarized. Both shapes are accepted; see
+	// summary_store.ParseTranscript.
+	//
+	// Wins over AudioKeys and TranscriptionIds: it is only ever set by hand,
+	// and only when the caller knows the transcript is the one they want.
+	TranscriptKey string `json:"transcriptKey"`
 	// Keys of the cooked audio in the recordings bucket, in recording order.
 	//
 	// There is usually one, but not always: Pandora opens a new record every
@@ -136,6 +149,7 @@ func Register(r *workflow.Registry, d Deps) error {
 		StartTranscription,
 		FetchTranscription,
 		StoreTranscript,
+		LoadTranscript,
 		DraftCast,
 		WriteEpisodeSummary,
 		StoreEpisodeSummary,

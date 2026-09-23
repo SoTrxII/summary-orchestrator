@@ -41,6 +41,11 @@ type SummaryStore interface {
 	// nothing outside the episode it came from -- so it needs all of them, not
 	// just the one just written.
 	LoadTranscripts(ctx context.Context, campaignId string) ([]Transcript, error)
+	// LoadTranscriptLines reads the dialogue of a transcript stored at an
+	// arbitrary key, in either of the two shapes the bucket holds (see
+	// ParseTranscript). It is what lets an episode be summarized from a
+	// transcript somebody already paid for instead of transcribing again.
+	LoadTranscriptLines(ctx context.Context, key string) ([]storyteller.Line, error)
 	// CampaignKey is where a campaign summary lives, whether or not one has
 	// been written yet.
 	CampaignKey(campaignId string) string

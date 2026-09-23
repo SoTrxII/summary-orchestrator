@@ -1,6 +1,7 @@
 package summary_store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"summary-orchestrator/internal/utils"
+	"summary-orchestrator/pkg/storyteller"
 
 	"github.com/dapr/go-sdk/client"
 )
@@ -189,6 +191,98 @@ func (s *DaprSummaryStore) LoadTranscripts(ctx context.Context, campaignId strin
 		transcripts = append(transcripts, t)
 	}
 	return transcripts, nil
+}
+
+// legacySegment is one entry of the bare array the pre-2026 summarizer wrote:
+// whisperX's own segment shape, timestamps included. Only the two fields that
+// survive into a summary are read -- start/end are dropped, exactly as
+// FetchTranscription drops them when collecting a fresh transcription.
+type legacySegment struct {
+	Speaker string `json:"speaker"`
+	Text    string `json:"text"`
+}
+
+// ParseTranscript reads either shape of transcript the summaries bucket holds.
+//
+// Two eras sit side by side in it. The current pipeline archives the
+// Transcript envelope under campaigns/<c>/episodes/<e>/transcript.json; the
+// pre-2026 summarizer wrote a bare whisperX segment array under
+// <c>/<e>/transcript.json. There are 252 of the latter, 570 hours of audio
+// across 16 campaigns -- and for 191 of them the source recording has since
+// been pruned, so the transcript is the only surviving record of that session
+// and no amount of CPU brings it back.
+//
+// Discriminated on the first byte rather than by trying one shape and falling
+// back to the other: a bare array cannot unmarshal into a struct at all, so a
+// fallback would quietly turn a genuinely corrupt envelope into an empty
+// transcript instead of an error.
+func ParseTranscript(data []byte) ([]storyteller.Line, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("empty transcript")
+	}
+
+	if trimmed[0] == '[' {
+		var segments []legacySegment
+		if err := json.Unmarshal(trimmed, &segments); err != nil {
+			return nil, fmt.Errorf("unreadable legacy transcript: %w", err)
+		}
+		lines := make([]storyteller.Line, 0, len(segments))
+		for _, s := range segments {
+			lines = append(lines, storyteller.Line{Speaker: s.Speaker, Text: s.Text})
+		}
+		return clean(lines), nil
+	}
+
+	var t Transcript
+	if err := json.Unmarshal(trimmed, &t); err != nil {
+		return nil, fmt.Errorf("unreadable transcript: %w", err)
+	}
+	return clean(t.Lines), nil
+}
+
+// clean drops what cannot carry dialogue and names what is unlabelled -- the
+// same two normalisations FetchTranscription applies to a fresh transcription,
+// so that an episode replayed from an archive is indistinguishable downstream
+// from one just cooked.
+func clean(lines []storyteller.Line) []storyteller.Line {
+	out := make([]storyteller.Line, 0, len(lines))
+	for _, l := range lines {
+		text := strings.TrimSpace(l.Text)
+		if text == "" {
+			continue
+		}
+		speaker := l.Speaker
+		if speaker == "" {
+			speaker = "UNKNOWN"
+		}
+		out = append(out, storyteller.Line{Speaker: speaker, Text: text})
+	}
+	return out
+}
+
+// LoadTranscriptLines fetches a transcript by key and returns its dialogue.
+//
+// Takes the key verbatim, unlike LoadTranscripts which derives it: the whole
+// point is reaching transcripts that do not live under the current layout.
+func (s *DaprSummaryStore) LoadTranscriptLines(ctx context.Context, key string) ([]storyteller.Line, error) {
+	res, err := s.client.InvokeBinding(ctx, &client.InvokeBindingRequest{
+		Name:      s.componentName,
+		Operation: "get",
+		Metadata:  map[string]string{"key": key},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", key, err)
+	}
+	lines, err := ParseTranscript(res.Data)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", key, err)
+	}
+	if len(lines) == 0 {
+		return nil, fmt.Errorf("%s carries no dialogue", key)
+	}
+	slog.Info(fmt.Sprintf("[SummaryStore] :: loaded %d lines from %s", len(lines), key))
+	return lines, nil
 }
 
 // SaveCast stores a campaign's cast list. Used both for a human's corrected

@@ -191,6 +191,108 @@ func TestLoadTranscriptsReadsEveryArchivedEpisode(t *testing.T) {
 	}
 }
 
+// The bucket holds two eras of transcript side by side, and 191 of the 252
+// legacy ones have no surviving recording -- so failing to read that shape
+// means those sessions can never be summarized at all.
+func TestParseTranscriptReadsBothEras(t *testing.T) {
+	legacy := []byte(`[
+		{"start":0.0,"end":15.02,"speaker":"SPEAKER_04","text":"Oh magnifique, bonjour."},
+		{"start":15.0,"end":17.02,"speaker":"SPEAKER_07","text":"Non."}
+	]`)
+	modern := []byte(`{"campaignId":"28","episodeId":"1","audioKeys":["28/1.ogg"],
+		"transcriptionIds":["t1"],"lines":[{"speaker":"SPEAKER_04","text":"Oh magnifique, bonjour."},
+		{"speaker":"SPEAKER_07","text":"Non."}]}`)
+
+	for _, tc := range []struct {
+		name string
+		data []byte
+	}{{"the pre-2026 bare segment array", legacy}, {"the archived envelope", modern}} {
+		t.Run(tc.name, func(t *testing.T) {
+			lines, err := ParseTranscript(tc.data)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(lines) != 2 {
+				t.Fatalf("got %d lines: %+v", len(lines), lines)
+			}
+			if lines[0].Speaker != "SPEAKER_04" || lines[0].Text != "Oh magnifique, bonjour." {
+				t.Fatalf("got %+v", lines[0])
+			}
+		})
+	}
+}
+
+// Diarization leaves gaps: a segment with no text carries nothing, and one
+// with no speaker would reach the agent as an empty label. FetchTranscription
+// already drops and names these, so a replayed episode has to match or it
+// would summarize differently from an identical freshly-cooked one.
+func TestParseTranscriptNormalisesLikeAFreshTranscription(t *testing.T) {
+	lines, err := ParseTranscript([]byte(`[
+		{"speaker":"SPEAKER_00","text":"  "},
+		{"speaker":"","text":"Qui va là ?"},
+		{"speaker":"SPEAKER_01","text":"  Personne.  "}
+	]`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("expected the blank segment dropped, got %+v", lines)
+	}
+	if lines[0].Speaker != "UNKNOWN" {
+		t.Errorf("an unlabelled speaker must be named, got %q", lines[0].Speaker)
+	}
+	if lines[1].Text != "Personne." {
+		t.Errorf("text should be trimmed, got %q", lines[1].Text)
+	}
+}
+
+// A corrupt envelope must not read as "no dialogue": that would summarize an
+// episode from nothing and store the result as though it were real.
+func TestParseTranscriptRejectsWhatItCannotRead(t *testing.T) {
+	for _, tc := range []struct{ name, data string }{
+		{"empty", ""},
+		{"truncated array", `[{"speaker":"A","text":`},
+		{"truncated object", `{"lines":[{"speaker":`},
+		{"not a transcript at all", `"just a string"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseTranscript([]byte(tc.data)); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
+}
+
+// An episode summarized from an archive has to reach the agent with the same
+// dialogue a fresh transcription would have produced.
+func TestLoadTranscriptLinesReadsTheKeyVerbatim(t *testing.T) {
+	binder := &test_utils.MockBinder{Data: []byte(
+		`[{"start":0,"end":1,"speaker":"SPEAKER_00","text":"On entre."}]`)}
+
+	lines, err := New("summaries", binder).LoadTranscriptLines(
+		context.Background(), "28/1/transcript.json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(lines) != 1 || lines[0].Text != "On entre." {
+		t.Fatalf("got %+v", lines)
+	}
+	// Verbatim: the whole point is reaching keys outside the current layout.
+	if got := binder.Calls[0].Metadata["key"]; got != "28/1/transcript.json" {
+		t.Fatalf("read %q", got)
+	}
+}
+
+// A transcript that parses but says nothing would otherwise be summarized as
+// an empty episode and stored in the graph as a real one.
+func TestLoadTranscriptLinesRejectsAnEmptyTranscript(t *testing.T) {
+	binder := &test_utils.MockBinder{Data: []byte(`[]`)}
+	if _, err := New("summaries", binder).LoadTranscriptLines(
+		context.Background(), "5/1/transcript.json"); err == nil {
+		t.Fatal("expected an error for a transcript with no dialogue")
+	}
+}
+
 // One corrupt archive must not cost the draft every other episode's evidence.
 func TestLoadTranscriptsSkipsAnUnreadableOne(t *testing.T) {
 	list := `{"Contents":[

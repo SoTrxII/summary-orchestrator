@@ -610,6 +610,55 @@ func TestDraftCastRedraftsWhileStillFlaggedGenerated(t *testing.T) {
 	}
 }
 
+// transcriptStore serves one stored transcript back by key.
+type transcriptStore struct {
+	summary_store.SummaryStore
+	lines []storyteller.Line
+	err   error
+	asked string
+}
+
+func (s *transcriptStore) LoadTranscriptLines(_ context.Context, key string) ([]storyteller.Line, error) {
+	s.asked = key
+	return s.lines, s.err
+}
+
+// The activity exists so an episode can be summarized from a transcript that
+// already exists -- for the 191 legacy episodes whose recording has been
+// pruned, it is the only route to a summary at all.
+func TestLoadTranscriptReadsTheRequestedKey(t *testing.T) {
+	previous := deps
+	store := &transcriptStore{lines: []storyteller.Line{{Speaker: "SPEAKER_00", Text: "On entre."}}}
+	deps = Deps{Summaries: store}
+	t.Cleanup(func() { deps = previous })
+
+	got, err := LoadTranscript(&fakeActivityContext{
+		input: loadTranscriptRequest{Key: "5/12/transcript.json"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if store.asked != "5/12/transcript.json" {
+		t.Fatalf("read %q", store.asked)
+	}
+	if lines := got.([]storyteller.Line); len(lines) != 1 || lines[0].Text != "On entre." {
+		t.Fatalf("got %+v", lines)
+	}
+}
+
+// Unlike a missing cast or an undatable recording, this one must fail loudly:
+// the caller named a specific transcript, and summarizing an episode from
+// nothing would store a fabricated chapter in the knowledge graph.
+func TestLoadTranscriptFailsWhenTheTranscriptCannotBeRead(t *testing.T) {
+	previous := deps
+	deps = Deps{Summaries: &transcriptStore{err: errors.New("NoSuchKey")}}
+	t.Cleanup(func() { deps = previous })
+
+	if _, err := LoadTranscript(&fakeActivityContext{
+		input: loadTranscriptRequest{Key: "5/99/transcript.json"}}); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
 // A listing failure must wait out like any other transient sidecar blip, not
 // be mistaken for "no transcripts yet".
 func TestDraftCastFailsOnAListingError(t *testing.T) {
