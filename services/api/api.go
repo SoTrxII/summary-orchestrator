@@ -47,8 +47,11 @@ func (c *Controller) StartEpisode(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if len(in.Keys()) == 0 {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "audioKey or audioKeys is required"})
+	// A recording to transcribe, or a transcript that already exists -- an
+	// episode summarized from an archive has no audio to name, and for the
+	// legacy episodes whose recording has been pruned there is none to name.
+	if len(in.Keys()) == 0 && in.TranscriptKey == "" {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "audioKey, audioKeys or transcriptKey is required"})
 		return
 	}
 	if in.JobId == "" {
