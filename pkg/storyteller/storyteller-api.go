@@ -38,5 +38,9 @@ type Storyteller interface {
 	// transcripts are raw, in the shape SummaryStore archived them (see
 	// summary_store.Transcript) -- passed through untouched rather than typed
 	// here, so this package does not need to depend on that one's shape.
-	DraftCast(ctx context.Context, campaignId string, transcripts []json.RawMessage) (string, error)
+	//
+	// cast is the campaign's current cast file, if any: the agent carries its
+	// human-only fields -- participants, the confirmed roster, alias groups --
+	// into the new draft, and a confirmed roster also steers the draft itself.
+	DraftCast(ctx context.Context, campaignId string, transcripts []json.RawMessage, cast string) (string, error)
 }

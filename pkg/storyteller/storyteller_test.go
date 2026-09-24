@@ -147,7 +147,7 @@ func TestCastEnvelope(t *testing.T) {
 		json.RawMessage(`{"episodeId":"1","lines":[]}`),
 		json.RawMessage(`{"episodeId":"2","lines":[]}`),
 	}
-	if _, err := agent.DraftCast(context.Background(), "28", transcripts); err != nil {
+	if _, err := agent.DraftCast(context.Background(), "28", transcripts, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, want := range []string{
@@ -160,6 +160,26 @@ func TestCastEnvelope(t *testing.T) {
 		if !strings.Contains(*body, want) {
 			t.Fatalf("envelope is missing %q, got %s", want, *body)
 		}
+	}
+	if strings.Contains(*body, "CASTING") {
+		t.Fatalf("no cast was given, so no [CASTING] section is expected, got %s", *body)
+	}
+}
+
+// The current draft rides in the same [CASTING] section the episode task uses,
+// ahead of [CONTENU] -- marlin reads everything after that marker as content.
+func TestCastEnvelopeCarriesTheCurrentDraft(t *testing.T) {
+	agent, _, body := agentServing(t, `{"jsonrpc":"2.0","id":"1","result":{"task":{
+		"artifacts":[{"parts":[{"text":"{}"}]}]}}}`)
+
+	if _, err := agent.DraftCast(context.Background(), "21",
+		[]json.RawMessage{json.RawMessage(`{"lines":[]}`)}, `{"confirmed":["Skydom"]}`); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	castAt := strings.Index(*body, "[CASTING]")
+	contentAt := strings.Index(*body, "[CONTENU]")
+	if castAt < 0 || castAt > contentAt || !strings.Contains(*body, `Skydom`) {
+		t.Fatalf("expected the draft in a [CASTING] section before [CONTENU], got %s", *body)
 	}
 }
 

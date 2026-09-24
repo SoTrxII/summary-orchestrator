@@ -282,6 +282,7 @@ func TestFetchTranscriptionFallsBackToDiarization(t *testing.T) {
 type mockAgent struct {
 	recordedAt      string
 	castTranscripts []json.RawMessage
+	castSent        string
 	castResult      string
 	castErr         error
 }
@@ -297,8 +298,9 @@ func (m *mockAgent) SummarizeCampaign(_ context.Context, _, _ string) (string, e
 
 func (m *mockAgent) Gist(_ context.Context, _, _, _ string) (string, error) { return "Gist.", nil }
 
-func (m *mockAgent) DraftCast(_ context.Context, _ string, transcripts []json.RawMessage) (string, error) {
+func (m *mockAgent) DraftCast(_ context.Context, _ string, transcripts []json.RawMessage, cast string) (string, error) {
 	m.castTranscripts = transcripts
+	m.castSent = cast
 	return m.castResult, m.castErr
 }
 
@@ -562,6 +564,25 @@ func TestDraftCastLeavesAFrozenDraftAlone(t *testing.T) {
 	}
 	if store.saved != "" {
 		t.Fatal("must not overwrite a frozen draft")
+	}
+}
+
+// A draft still marked generated is redrafted -- but the agent has to see it,
+// or the confirmed roster, participants and alias groups a human added to it
+// are erased by the very next episode.
+func TestDraftCastHandsTheCurrentDraftToTheAgent(t *testing.T) {
+	previous := deps
+	agent := &mockAgent{castResult: `{"generated":true}`}
+	current := `{"generated":true,"confirmed":["Skydom"],"participants":["Alex"]}`
+	store := &fakeCastStore{cast: current, transcripts: threeTranscripts()}
+	deps = Deps{Agent: agent, Summaries: store}
+	t.Cleanup(func() { deps = previous })
+
+	if _, err := DraftCast(&fakeActivityContext{input: draftCastRequest{CampaignId: "21"}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if agent.castSent != current {
+		t.Fatalf("expected the current draft to reach the agent, got %q", agent.castSent)
 	}
 }
 

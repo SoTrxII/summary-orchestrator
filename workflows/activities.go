@@ -181,7 +181,8 @@ func DraftCast(ctx workflow.ActivityContext) (any, error) {
 		return nil, err
 	}
 
-	if current := deps.Summaries.LoadCast(ctx.Context(), in.CampaignId); current != "" {
+	current := deps.Summaries.LoadCast(ctx.Context(), in.CampaignId)
+	if current != "" {
 		var flag struct {
 			Generated *bool `json:"generated"`
 		}
@@ -207,7 +208,12 @@ func DraftCast(ctx workflow.ActivityContext) (any, error) {
 		raw = append(raw, b)
 	}
 
-	draft, err := deps.Agent.DraftCast(ctx.Context(), in.CampaignId, raw)
+	// The draft being replaced goes along: while it is still "generated", a
+	// human may already have added what the transcripts cannot say (who is at
+	// the table, which names are the real player characters, which are one
+	// person under two identities), and a redraft that did not carry those
+	// over would erase them on the next episode.
+	draft, err := deps.Agent.DraftCast(ctx.Context(), in.CampaignId, raw, current)
 	if err != nil {
 		return nil, fmt.Errorf("drafting cast: %w", err)
 	}
