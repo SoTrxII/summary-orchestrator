@@ -136,6 +136,47 @@ func StartTranscription(ctx workflow.ActivityContext) (any, error) {
 	return deps.Transcriber.Start(ctx.Context(), in.AudioUrl, in.MaxSpeakers)
 }
 
+type whisperLeaseRequest struct {
+	// The workflow instance id: unique, and stable across replays.
+	Holder string `json:"holder"`
+	TaskId string `json:"taskId"`
+}
+
+// AcquireWhisper waits for whisper to be free. See whisper_lease.Lease.
+//
+// Every failure is retryable. Busy, losing a race for the lease, a state
+// store blip and a whisper that cannot be asked all mean the same thing here:
+// not yet, ask again later.
+func AcquireWhisper(ctx workflow.ActivityContext) (any, error) {
+	var in whisperLeaseRequest
+	if err := ctx.GetInput(&in); err != nil {
+		return nil, err
+	}
+	if err := deps.Whisper.Acquire(ctx.Context(), in.Holder); err != nil {
+		slog.Info(fmt.Sprintf("[AcquireWhisper] :: job %s :: waiting: %s", in.Holder, err))
+		return nil, retryable(err)
+	}
+	return nil, nil
+}
+
+// AttachWhisper records the task this holder just started on the lease.
+func AttachWhisper(ctx workflow.ActivityContext) (any, error) {
+	var in whisperLeaseRequest
+	if err := ctx.GetInput(&in); err != nil {
+		return nil, err
+	}
+	return nil, deps.Whisper.Attach(ctx.Context(), in.Holder, in.TaskId)
+}
+
+// ReleaseWhisper gives whisper back.
+func ReleaseWhisper(ctx workflow.ActivityContext) (any, error) {
+	var in whisperLeaseRequest
+	if err := ctx.GetInput(&in); err != nil {
+		return nil, err
+	}
+	return nil, deps.Whisper.Release(ctx.Context(), in.Holder)
+}
+
 // StoreTranscript archives the transcript the summary will be written from.
 func StoreTranscript(ctx workflow.ActivityContext) (any, error) {
 	var in transcriptRequest

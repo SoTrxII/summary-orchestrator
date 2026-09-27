@@ -12,6 +12,7 @@ import (
 	"summary-orchestrator/pkg/storyteller"
 	summary_store "summary-orchestrator/pkg/summary-store"
 	"summary-orchestrator/pkg/transcriber"
+	whisper_lease "summary-orchestrator/pkg/whisper-lease"
 
 	"github.com/dapr/durabletask-go/workflow"
 )
@@ -79,6 +80,16 @@ type EpisodeInput struct {
 	AudioKeys []string `json:"audioKeys"`
 	// Single-key form of AudioKeys.
 	AudioKey string `json:"audioKey"`
+	// Stop once the transcript is archived: no cast draft, no chapter, no
+	// graph write, no gist.
+	//
+	// For recovering an episode of a campaign that is not being summarized
+	// yet. Before this existed, the only way to transcribe without writing a
+	// chapter was to call whisper directly -- past the whisper lease, so any
+	// real episode ending meanwhile would run beside it. The archived
+	// transcript is then replayed with TranscriptKey, in episode order, when
+	// the campaign's turn comes.
+	TranscribeOnly bool `json:"transcribeOnly"`
 }
 
 // Keys is the recording, whichever form the caller expressed it in. The
@@ -126,6 +137,7 @@ type Gist struct {
 type Deps struct {
 	Audio       audio_store.AudioStore
 	Transcriber transcriber.Transcriber
+	Whisper     whisper_lease.Lease
 	Agent       storyteller.Storyteller
 	Summaries   summary_store.SummaryStore
 	Sessions    session_lookup.SessionLookup
@@ -146,6 +158,9 @@ func Register(r *workflow.Registry, d Deps) error {
 	activities := []workflow.Activity{
 		PresignAudio,
 		CountSpeakers,
+		AcquireWhisper,
+		AttachWhisper,
+		ReleaseWhisper,
 		StartTranscription,
 		FetchTranscription,
 		StoreTranscript,
@@ -206,6 +221,27 @@ var transcriptionRetry = &workflow.RetryPolicy{
 	BackoffCoefficient:   1.5,
 	MaxRetryInterval:     10 * time.Minute,
 	RetryTimeout:         48 * time.Hour,
+	Handle:               isRetryable,
+}
+
+// whisperQueueRetry waits for another episode to finish with whisper.
+//
+// The wait is a queue, so its length is other people's transcriptions: each
+// runs 1.7x to 3.5x its session's length, 3-10h for a normal one. Three tables
+// ending the same evening leaves the last waiting on two of those; a backlog
+// submitted by hand can be longer still. 72h covers that without letting a
+// wedged lease hold an episode forever -- the lease itself frees an abandoned
+// holder well before this runs out (see whisper_lease.MaxHold).
+//
+// Polling every 5 minutes at most costs a state read and one whisper status
+// call, and leaves whisper idle for at most 5 minutes between jobs that take
+// hours.
+var whisperQueueRetry = &workflow.RetryPolicy{
+	MaxAttempts:          1000,
+	InitialRetryInterval: 1 * time.Minute,
+	BackoffCoefficient:   1.5,
+	MaxRetryInterval:     5 * time.Minute,
+	RetryTimeout:         72 * time.Hour,
 	Handle:               isRetryable,
 }
 

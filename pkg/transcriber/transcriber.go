@@ -127,6 +127,41 @@ func (w *WhisperX) Result(ctx context.Context, taskId string) ([]Segment, error)
 	}
 }
 
+func (w *WhisperX) Status(ctx context.Context, taskId string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/task/%s", w.cfg.BaseUrl, taskId), nil)
+	if err != nil {
+		return "", err
+	}
+	w.authorize(req)
+
+	res, err := w.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("polling task %s: %w", taskId, err)
+	}
+	defer res.Body.Close()
+	payload, err := io.ReadAll(res.Body)
+	if err != nil {
+		return "", fmt.Errorf("polling task %s: %w", taskId, err)
+	}
+
+	// An unknown id is a 404 with code TASK_NOT_FOUND. It happens for real:
+	// a task table wiped along with its hostPath, or an id carried over from
+	// another whisper deployment.
+	if res.StatusCode == http.StatusNotFound {
+		return StatusMissing, nil
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return "", fmt.Errorf("polling task %s: whisper returned %d: %s", taskId, res.StatusCode, strings.TrimSpace(string(payload)))
+	}
+	var parsed struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		return "", fmt.Errorf("polling task %s: %w", taskId, err)
+	}
+	return parsed.Status, nil
+}
+
 func (w *WhisperX) authorize(req *http.Request) {
 	if w.cfg.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+w.cfg.Token)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"summary-orchestrator/pkg/speakers"
 	"summary-orchestrator/pkg/storyteller"
 	"summary-orchestrator/pkg/transcriber"
@@ -12,6 +13,7 @@ import (
 
 	session_lookup "summary-orchestrator/pkg/session-lookup"
 	summary_store "summary-orchestrator/pkg/summary-store"
+	whisper_lease "summary-orchestrator/pkg/whisper-lease"
 	test_utils "summary-orchestrator/test-utils"
 
 	"github.com/dapr/durabletask-go/workflow"
@@ -208,6 +210,65 @@ func (m *mockTranscriber) Start(_ context.Context, _ string, _ int) (string, err
 
 func (m *mockTranscriber) Result(_ context.Context, _ string) ([]transcriber.Segment, error) {
 	return m.segments, nil
+}
+
+func (m *mockTranscriber) Status(_ context.Context, _ string) (string, error) {
+	return "completed", nil
+}
+
+// mockLease answers Acquire with a fixed error and records who asked.
+type mockLease struct {
+	acquireErr error
+	acquired   []string
+}
+
+func (m *mockLease) Acquire(_ context.Context, holder string) error {
+	m.acquired = append(m.acquired, holder)
+	return m.acquireErr
+}
+
+func (m *mockLease) Attach(_ context.Context, _, _ string) error { return nil }
+
+func (m *mockLease) Release(_ context.Context, _ string) error { return nil }
+
+// Waiting for whisper is a queue, not a failure: the second episode of the
+// evening must be told to come back later, or it fails outright the moment
+// the first one is transcribing.
+func TestAcquireWhisperWaitsWhileItIsBusy(t *testing.T) {
+	previous := deps
+	lease := &mockLease{acquireErr: fmt.Errorf("%w: held by c22-ep9", whisper_lease.ErrBusy)}
+	deps = Deps{Whisper: lease}
+	t.Cleanup(func() { deps = previous })
+
+	_, err := AcquireWhisper(&fakeActivityContext{input: whisperLeaseRequest{Holder: "c29-ep11"}})
+	if !isRetryable(err) {
+		t.Fatalf("expected a retryable error, got %v", err)
+	}
+	if len(lease.acquired) != 1 || lease.acquired[0] != "c29-ep11" {
+		t.Fatalf("expected the workflow's own id as holder, got %v", lease.acquired)
+	}
+}
+
+// Anything short of holding the lease is "not yet": a store or whisper blip
+// must be waited out too, never taken as permission to transcribe.
+func TestAcquireWhisperWaitsOutAStoreFailure(t *testing.T) {
+	previous := deps
+	deps = Deps{Whisper: &mockLease{acquireErr: errors.New("statestore unavailable")}}
+	t.Cleanup(func() { deps = previous })
+
+	if _, err := AcquireWhisper(&fakeActivityContext{input: whisperLeaseRequest{Holder: "a"}}); !isRetryable(err) {
+		t.Fatalf("expected a retryable error, got %v", err)
+	}
+}
+
+func TestAcquireWhisperSucceedsWhenFree(t *testing.T) {
+	previous := deps
+	deps = Deps{Whisper: &mockLease{}}
+	t.Cleanup(func() { deps = previous })
+
+	if _, err := AcquireWhisper(&fakeActivityContext{input: whisperLeaseRequest{Holder: "a"}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 func diarized() []transcriber.Segment {

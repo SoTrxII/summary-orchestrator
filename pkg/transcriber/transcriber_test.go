@@ -159,3 +159,30 @@ func TestStartSendsSpeakerCeilingOnlyWhenKnown(t *testing.T) {
 		t.Errorf("an unknown ceiling must be omitted, got %q", query.Get("max_speakers"))
 	}
 }
+
+func TestStatusReportsTheTaskState(t *testing.T) {
+	w := serving(t, 200, `{"status":"processing","result":null,"metadata":{},"error":null}`)
+	got, err := w.Status(context.Background(), "abc")
+	if err != nil || got != "processing" {
+		t.Fatalf("expected processing, got %q (%v)", got, err)
+	}
+}
+
+// Captured from the live server: an unknown id is a 404, and it means the
+// task is gone, which the whisper lease reads as "no longer using whisper".
+func TestStatusOfAnUnknownTaskIsMissing(t *testing.T) {
+	w := serving(t, 404, `{"error":{"message":"The requested task could not be found. Please check the task ID.","type":"invalid_request_error","code":"TASK_NOT_FOUND"}}`)
+	got, err := w.Status(context.Background(), "abc")
+	if err != nil || got != StatusMissing {
+		t.Fatalf("expected %q, got %q (%v)", StatusMissing, got, err)
+	}
+}
+
+// Anything else is "could not ask", which must stay an error: the lease would
+// otherwise read a whisper outage as a finished task and start a second one.
+func TestStatusOfAFailingServerIsAnError(t *testing.T) {
+	w := serving(t, 500, `Internal Server Error`)
+	if got, err := w.Status(context.Background(), "abc"); err == nil {
+		t.Fatalf("expected an error, got %q", got)
+	}
+}

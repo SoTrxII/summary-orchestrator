@@ -29,4 +29,17 @@ type Transcriber interface {
 	Start(ctx context.Context, audioUrl string, maxSpeakers int) (taskId string, err error)
 	// Result returns the diarized segments, or ErrStillRunning.
 	Result(ctx context.Context, taskId string) ([]Segment, error)
+	// Status reports whether a task is still occupying whisper: "queued",
+	// "processing", "completed", "failed", or StatusMissing when whisper has
+	// no record of it. An error means whisper could not be asked, which is
+	// not the same as the task being gone.
+	Status(ctx context.Context, taskId string) (string, error)
+}
+
+// StatusMissing is what Status reports for a task id whisper does not know.
+const StatusMissing = "missing"
+
+// Running reports whether a task in this status is still using whisper.
+func Running(status string) bool {
+	return status == "queued" || status == "processing"
 }

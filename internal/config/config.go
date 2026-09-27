@@ -13,6 +13,7 @@ const (
 	DefaultSummaryStore = "summaries"
 	DefaultDb           = "db"
 	DefaultPubSub       = "pubsub"
+	DefaultStateStore   = "statestore"
 	DefaultGistTopic    = "gists"
 
 	DefaultWhisperUrl      = "http://whisper:8000"
@@ -32,7 +33,7 @@ const (
 
 	DefaultPresignTTL     = "6h"
 	DefaultServiceName    = "summary-orchestrator"
-	DefaultServiceVersion = "0.3.10"
+	DefaultServiceVersion = "0.3.11"
 )
 
 // Config is the whole runtime configuration, read once at startup.
@@ -49,6 +50,8 @@ type Config struct {
 	Db           string
 	PubSub       string
 	GistTopic    string
+	// Holds the whisper lease. Needs first-write (ETag) concurrency.
+	StateStore string
 
 	// whisperX-FastAPI
 	WhisperUrl      string
@@ -91,6 +94,7 @@ func Parse() *Config {
 		Db:                 DefaultDb,
 		PubSub:             DefaultPubSub,
 		GistTopic:          DefaultGistTopic,
+		StateStore:         DefaultStateStore,
 		WhisperUrl:         DefaultWhisperUrl,
 		WhisperLanguage:    DefaultWhisperLanguage,
 		WhisperModel:       DefaultWhisperModel,
@@ -112,6 +116,7 @@ func Parse() *Config {
 	strEnv("DB_NAME", &c.Db)
 	strEnv("PUBSUB_NAME", &c.PubSub)
 	strEnv("GIST_TOPIC", &c.GistTopic)
+	strEnv("STATE_STORE_NAME", &c.StateStore)
 
 	strEnv("WHISPER_URL", &c.WhisperUrl)
 	strEnv("WHISPER_BEARER_TOKEN", &c.WhisperToken)
