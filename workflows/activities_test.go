@@ -281,14 +281,16 @@ func TestFetchTranscriptionFallsBackToDiarization(t *testing.T) {
 // mockAgent records what reached the A2A client.
 type mockAgent struct {
 	recordedAt      string
+	oneShot         bool
 	castTranscripts []json.RawMessage
 	castSent        string
 	castResult      string
 	castErr         error
 }
 
-func (m *mockAgent) SummarizeEpisode(_ context.Context, _, _ string, _ []storyteller.Line, _, recordedAt string) (string, error) {
+func (m *mockAgent) SummarizeEpisode(_ context.Context, _, _ string, _ []storyteller.Line, _, recordedAt string, oneShot bool) (string, error) {
 	m.recordedAt = recordedAt
+	m.oneShot = oneShot
 	return "Chapitre.", nil
 }
 
@@ -690,5 +692,21 @@ func TestDraftCastFailsOnAListingError(t *testing.T) {
 
 	if _, err := DraftCast(&fakeActivityContext{input: draftCastRequest{CampaignId: "28"}}); err == nil {
 		t.Fatal("expected an error when the transcripts cannot be listed")
+	}
+}
+
+func TestWriteEpisodeSummaryTellsTheAgentWhenTheSessionIsAOneShot(t *testing.T) {
+	previous := deps
+	agent := &mockAgent{}
+	deps = Deps{Audio: &mockAudioStore{}, Agent: agent, Summaries: &mockSummaries{}, Sessions: &test_utils.MockSessionLookup{}}
+	t.Cleanup(func() { deps = previous })
+
+	if _, err := WriteEpisodeSummary(&fakeActivityContext{input: episodeSummaryRequest{
+		CampaignId: "7", EpisodeId: "3", OneShot: true,
+	}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !agent.oneShot {
+		t.Fatalf("the one-shot flag did not reach the agent")
 	}
 }

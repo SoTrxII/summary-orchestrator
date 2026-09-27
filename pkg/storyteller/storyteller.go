@@ -47,14 +47,24 @@ func New(endpoint, apiKey, agent string, viaGateway bool, client *http.Client) *
 	}
 }
 
-func (a *A2A) SummarizeEpisode(ctx context.Context, campaignId, episodeId string, lines []Line, cast, recordedAt string) (string, error) {
+func (a *A2A) SummarizeEpisode(ctx context.Context, campaignId, episodeId string, lines []Line, cast, recordedAt string, oneShot bool) (string, error) {
 	content, err := json.Marshal(lines)
 	if err != nil {
 		return "", err
 	}
 	return a.send(ctx, fmt.Sprintf(
-		"Tâche: episode\nCampagne: %s\nEpisode: %s\n%s%s[CONTENU]\n%s",
-		campaignId, episodeId, dateHeader(recordedAt), castSection(cast), content))
+		"Tâche: episode\nCampagne: %s\nEpisode: %s\n%s%s%s[CONTENU]\n%s",
+		campaignId, episodeId, dateHeader(recordedAt), oneShotHeader(oneShot), castSection(cast), content))
+}
+
+// oneShotHeader tells the agent the session stands alone. Omitted rather than
+// sent as "false": an agent from before the header existed ignores what it does
+// not know, so a campaign episode reads exactly as it always did.
+func oneShotHeader(oneShot bool) string {
+	if !oneShot {
+		return ""
+	}
+	return "One-shot: true\n"
 }
 
 // dateHeader renders the optional Date header the agent reads as the episode's

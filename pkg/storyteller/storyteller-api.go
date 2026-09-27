@@ -24,7 +24,11 @@ type Storyteller interface {
 	// knowledge graph, which is what decides the winner when two episodes
 	// contradict each other -- so an empty one is a real loss of ordering,
 	// not a cosmetic gap.
-	SummarizeEpisode(ctx context.Context, campaignId, episodeId string, lines []Line, cast, recordedAt string) (string, error)
+	//
+	// oneShot marks a session with no campaign around it: the agent writes the
+	// chapter from the transcript alone and neither reads nor writes the
+	// knowledge graph.
+	SummarizeEpisode(ctx context.Context, campaignId, episodeId string, lines []Line, cast, recordedAt string, oneShot bool) (string, error)
 	// SummarizeCampaign rebuilds the whole-campaign narrative from the
 	// episodes already stored in Graphiti. Re-runnable at any time.
 	SummarizeCampaign(ctx context.Context, campaignId string, cast string) (string, error)

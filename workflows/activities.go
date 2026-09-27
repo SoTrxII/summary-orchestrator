@@ -61,6 +61,8 @@ type episodeSummaryRequest struct {
 	// Caller-supplied play date, RFC3339. Wins over both lookups below when
 	// set; see EpisodeInput.RecordedAt for why it exists.
 	RecordedAt string `json:"recordedAt"`
+	// The session stands alone, so the agent skips the knowledge graph.
+	OneShot bool `json:"oneShot"`
 }
 
 type campaignSummaryRequest struct {
@@ -290,7 +292,7 @@ func WriteEpisodeSummary(ctx workflow.ActivityContext) (any, error) {
 	}
 	cast := deps.Summaries.LoadCast(ctx.Context(), in.CampaignId)
 	return deps.Agent.SummarizeEpisode(ctx.Context(), in.CampaignId, in.EpisodeId,
-		in.Lines, cast, recordedAt(ctx, in))
+		in.Lines, cast, recordedAt(ctx, in), in.OneShot)
 }
 
 // recordedAt establishes when the session was played, or returns "" when

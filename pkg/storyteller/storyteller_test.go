@@ -32,7 +32,7 @@ func TestReadsArtifactText(t *testing.T) {
 		"status":{"state":"TASK_STATE_COMPLETED"},
 		"artifacts":[{"parts":[{"text":"Chapitre premier."}]}]}}}`)
 
-	got, err := agent.SummarizeEpisode(context.Background(), "14", "4", []Line{{Speaker: "Alice", Text: "Bonjour"}}, "", "")
+	got, err := agent.SummarizeEpisode(context.Background(), "14", "4", []Line{{Speaker: "Alice", Text: "Bonjour"}}, "", "", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestEpisodeEnvelope(t *testing.T) {
 	agent, _, body := agentServing(t, `{"jsonrpc":"2.0","id":"1","result":{"task":{
 		"artifacts":[{"parts":[{"text":"ok"}]}]}}}`)
 
-	if _, err := agent.SummarizeEpisode(context.Background(), "14", "04", []Line{{Speaker: "Alice", Text: "Bonjour"}}, "", ""); err != nil {
+	if _, err := agent.SummarizeEpisode(context.Background(), "14", "04", []Line{{Speaker: "Alice", Text: "Bonjour"}}, "", "", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, want := range []string{
@@ -232,7 +232,7 @@ func TestCastRidesAheadOfTheTranscript(t *testing.T) {
 	cast := `{"characters":[{"name":"Kit"}],"participants":["Lucas"]}`
 
 	if _, err := agent.SummarizeEpisode(context.Background(), "22", "1",
-		[]Line{{Speaker: "Alice", Text: "Bonjour"}}, cast, ""); err != nil {
+		[]Line{{Speaker: "Alice", Text: "Bonjour"}}, cast, "", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -256,7 +256,7 @@ func TestNoCastLeavesTheMessageUnchanged(t *testing.T) {
 	agent, _, body := agentServing(t, okTask)
 
 	if _, err := agent.SummarizeEpisode(context.Background(), "22", "1",
-		[]Line{{Speaker: "Alice", Text: "Bonjour"}}, "   ", ""); err != nil {
+		[]Line{{Speaker: "Alice", Text: "Bonjour"}}, "   ", "", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if strings.Contains(*body, "CASTING") {
@@ -287,7 +287,7 @@ func TestEpisodeEnvelopeCarriesThePlayDate(t *testing.T) {
 	agent, _, body := agentServing(t, okTask)
 
 	if _, err := agent.SummarizeEpisode(context.Background(), "22", "4",
-		[]Line{{Speaker: "Alice", Text: "Bonjour"}}, "", "2026-01-05T22:05:18Z"); err != nil {
+		[]Line{{Speaker: "Alice", Text: "Bonjour"}}, "", "2026-01-05T22:05:18Z", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -308,10 +308,40 @@ func TestNoPlayDateLeavesTheMessageUnchanged(t *testing.T) {
 	agent, _, body := agentServing(t, okTask)
 
 	if _, err := agent.SummarizeEpisode(context.Background(), "22", "4",
-		[]Line{{Speaker: "Alice", Text: "Bonjour"}}, "", "   "); err != nil {
+		[]Line{{Speaker: "Alice", Text: "Bonjour"}}, "", "   ", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if strings.Contains(*body, "Date:") {
 		t.Fatalf("emitted an empty date header: %q", *body)
+	}
+}
+
+// A one-shot is flagged in the header region, ahead of [CONTENU]: the agent
+// only trusts the header lines for it, so a transcript cannot flag an episode.
+func TestOneShotRidesInTheHeaders(t *testing.T) {
+	agent, _, body := agentServing(t, okTask)
+
+	if _, err := agent.SummarizeEpisode(context.Background(), "7", "3",
+		[]Line{{Speaker: "Alice", Text: "Bonjour"}}, "", "", true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sent := *body
+	flagAt := strings.Index(sent, "One-shot: true")
+	if flagAt < 0 || flagAt > strings.Index(sent, "[CONTENU]") {
+		t.Fatalf("no one-shot header ahead of the content in %q", sent)
+	}
+}
+
+// Every campaign episode goes down this path, so it must read exactly as it
+// did before the header existed.
+func TestACampaignEpisodeCarriesNoOneShotHeader(t *testing.T) {
+	agent, _, body := agentServing(t, okTask)
+
+	if _, err := agent.SummarizeEpisode(context.Background(), "7", "3",
+		[]Line{{Speaker: "Alice", Text: "Bonjour"}}, "", "", false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(strings.ToLower(*body), "one-shot") {
+		t.Fatalf("unexpected header in %q", *body)
 	}
 }
