@@ -1,10 +1,13 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 
+	summary_store "summary-orchestrator/pkg/summary-store"
 	"summary-orchestrator/workflows"
 
 	"github.com/dapr/durabletask-go/workflow"
@@ -12,14 +15,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// Controller exposes the workflow over HTTP. processing-orchestrator posts
-// here once a recording has finished cooking.
+// Controller exposes the workflow over HTTP, and what it has written.
+// processing-orchestrator posts here once a recording has finished cooking;
+// Velvet reads the summaries back.
 type Controller struct {
-	client Scheduler
+	client    Scheduler
+	summaries SummaryReader
 }
 
-func NewController(client Scheduler) *Controller {
-	return &Controller{client}
+func NewController(client Scheduler, summaries SummaryReader) *Controller {
+	return &Controller{client, summaries}
 }
 
 func (c *Controller) Register(r gin.IRouter) {
@@ -28,6 +33,11 @@ func (c *Controller) Register(r gin.IRouter) {
 	{
 		wf.POST("/episode", c.StartEpisode)
 		wf.GET("/:id", c.Status)
+	}
+	campaign := r.Group("/campaigns/:campaign")
+	{
+		campaign.GET("/summary", c.CampaignSummary)
+		campaign.GET("/episodes/:episode/summary", c.EpisodeSummary)
 	}
 }
 
@@ -91,4 +101,62 @@ func (c *Controller) Status(ctx *gin.Context) {
 		return
 	}
 	ctx.JSON(http.StatusOK, meta)
+}
+
+// CampaignSummary returns the narrative of a whole campaign, as stored.
+//
+// Neither this route nor EpisodeSummary goes anywhere but the bucket: no model
+// and no graph, so both keep answering while the storyteller or whisper is
+// down, or busy with an episode for the next several hours.
+func (c *Controller) CampaignSummary(ctx *gin.Context) {
+	campaignId, ok := idParam(ctx, "campaign")
+	if !ok {
+		return
+	}
+	summary, err := c.summaries.LoadCampaign(ctx, campaignId)
+	answerSummary(ctx, summary, err)
+}
+
+// EpisodeSummary returns the chapter written for one episode, as stored.
+func (c *Controller) EpisodeSummary(ctx *gin.Context) {
+	campaignId, ok := idParam(ctx, "campaign")
+	if !ok {
+		return
+	}
+	episodeId, ok := idParam(ctx, "episode")
+	if !ok {
+		return
+	}
+	summary, err := c.summaries.LoadEpisode(ctx, campaignId, episodeId)
+	answerSummary(ctx, summary, err)
+}
+
+// idParam reads a campaign or episode number off the path and answers 400
+// itself when it is not one.
+//
+// The ids end up in a bucket key, so nothing but a number may get through. It
+// is handed back re-formatted for the same reason the check exists: "007"
+// parses, and would name a key nothing was ever written to.
+func idParam(ctx *gin.Context, name string) (string, bool) {
+	id, err := strconv.ParseUint(ctx.Param(name), 10, 32)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s must be a number", name)})
+		return "", false
+	}
+	return strconv.FormatUint(id, 10), true
+}
+
+// answerSummary tells the two ways of having no text apart: 404 is "nothing
+// was written", which a caller shows as not summarized yet, and 502 is "the
+// bucket could not be read", which it shows as an outage.
+func answerSummary(ctx *gin.Context, summary summary_store.Summary, err error) {
+	switch {
+	case err == nil:
+		ctx.JSON(http.StatusOK, summary)
+	case errors.Is(err, summary_store.ErrNoSummary):
+		ctx.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+	default:
+		slog.Error(fmt.Sprintf("[Api] :: could not read a summary : %s", err))
+		ctx.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+	}
 }

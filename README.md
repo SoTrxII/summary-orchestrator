@@ -71,6 +71,19 @@ GET /workflows/{id}    # status
 GET /health
 ```
 
+What has been written can be read back:
+
+```http
+GET /campaigns/{campaign}/summary
+GET /campaigns/{campaign}/episodes/{episode}/summary
+{ "campaignId": "20", "episodeId": "3", "summary": "..." }
+```
+
+Both serve the stored object as is, from the bucket alone: no model and no
+graph, so they answer while the storyteller or whisper is down. `404` means
+nothing was written at that key, `502` that the bucket could not be read —
+Velvet shows the first as "not summarized yet" and the second as an outage.
+
 ## Configuration
 
 | env variable | description | default |

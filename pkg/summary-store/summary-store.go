@@ -28,12 +28,6 @@ func New(componentName string, client utils.Binder) *DaprSummaryStore {
 	return &DaprSummaryStore{componentName, client}
 }
 
-type storedSummary struct {
-	CampaignId string `json:"campaignId"`
-	EpisodeId  string `json:"episodeId,omitempty"`
-	Summary    string `json:"summary"`
-}
-
 func EpisodeKey(campaignId, episodeId string) string {
 	return fmt.Sprintf("campaigns/%s/episodes/%s/summary.json", campaignId, episodeId)
 }
@@ -86,7 +80,7 @@ func (s *DaprSummaryStore) CampaignKey(campaignId string) string {
 
 func (s *DaprSummaryStore) SaveEpisode(ctx context.Context, campaignId, episodeId, summary string) (string, error) {
 	key := EpisodeKey(campaignId, episodeId)
-	return key, s.save(ctx, key, storedSummary{
+	return key, s.save(ctx, key, Summary{
 		CampaignId: campaignId,
 		EpisodeId:  episodeId,
 		Summary:    summary,
@@ -95,10 +89,55 @@ func (s *DaprSummaryStore) SaveEpisode(ctx context.Context, campaignId, episodeI
 
 func (s *DaprSummaryStore) SaveCampaign(ctx context.Context, campaignId, summary string) (string, error) {
 	key := s.CampaignKey(campaignId)
-	return key, s.save(ctx, key, storedSummary{
+	return key, s.save(ctx, key, Summary{
 		CampaignId: campaignId,
 		Summary:    summary,
 	})
+}
+
+// notFoundMarker is how the S3 binding reports a key that does not exist.
+//
+// Matched as text because that is all there is: the binding's error reaches
+// this process as a message, with no code that sets a missing object apart
+// from an unreachable bucket. Read off the live sidecar on 2026-10-03, for an
+// episode that was never summarized:
+// "error invoking output binding summaries: object not found".
+const notFoundMarker = "object not found"
+
+// LoadEpisode reads back an episode's narrative, or ErrNoSummary.
+func (s *DaprSummaryStore) LoadEpisode(ctx context.Context, campaignId, episodeId string) (Summary, error) {
+	return s.load(ctx, EpisodeKey(campaignId, episodeId))
+}
+
+// LoadCampaign reads back a whole-campaign narrative, or ErrNoSummary.
+func (s *DaprSummaryStore) LoadCampaign(ctx context.Context, campaignId string) (Summary, error) {
+	return s.load(ctx, s.CampaignKey(campaignId))
+}
+
+// load is the read side of save. Unlike LoadCast it does not degrade: its
+// caller is somebody asking for this text, who has to be told whether it does
+// not exist or could not be read.
+func (s *DaprSummaryStore) load(ctx context.Context, key string) (Summary, error) {
+	res, err := s.client.InvokeBinding(ctx, &client.InvokeBindingRequest{
+		Name:      s.componentName,
+		Operation: "get",
+		Metadata:  map[string]string{"key": key},
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), notFoundMarker) {
+			return Summary{}, fmt.Errorf("%s: %w", key, ErrNoSummary)
+		}
+		return Summary{}, fmt.Errorf("reading %s: %w", key, err)
+	}
+	var stored Summary
+	if err := json.Unmarshal(res.Data, &stored); err != nil {
+		return Summary{}, fmt.Errorf("reading %s: %w", key, err)
+	}
+	// An object with no text in it gives a reader nothing more than no object.
+	if strings.TrimSpace(stored.Summary) == "" {
+		return Summary{}, fmt.Errorf("%s: %w", key, ErrNoSummary)
+	}
+	return stored, nil
 }
 
 // SaveTranscript archives a transcript. Unlike the summaries it does not go
@@ -293,7 +332,7 @@ func (s *DaprSummaryStore) SaveCast(ctx context.Context, campaignId, cast string
 	return key, s.put(ctx, key, []byte(cast))
 }
 
-func (s *DaprSummaryStore) save(ctx context.Context, key string, payload storedSummary) error {
+func (s *DaprSummaryStore) save(ctx context.Context, key string, payload Summary) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err

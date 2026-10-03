@@ -63,13 +63,15 @@ func main() {
 		ComputeType: cfg.WhisperComputeType,
 	}, &http.Client{Timeout: whisperTimeout})
 
+	summaries := summary_store.New(cfg.SummaryStore, daprClient)
+
 	registry := workflow.NewRegistry()
 	err = workflows.Register(registry, workflows.Deps{
 		Audio:       audio_store.New(cfg.ObjectStore, cfg.PresignTTL, daprClient),
 		Transcriber: whisper,
 		Whisper:     whisper_lease.New(cfg.StateStore, daprClient, whisper.Status),
 		Agent:       storyteller.New(cfg.AgentEndpoint(), cfg.GatewayKey, cfg.StorytellerAgent, cfg.StorytellerViaGateway, &http.Client{Timeout: agentTimeout}),
-		Summaries:   summary_store.New(cfg.SummaryStore, daprClient),
+		Summaries:   summaries,
 		Sessions:    session_lookup.New(cfg.Db, daprClient),
 		Publisher:   daprClient,
 		PubSubName:  cfg.PubSub,
@@ -90,7 +92,7 @@ func main() {
 	slog.Info("[Main] :: workflow worker started")
 
 	r := gin.Default()
-	api.NewController(wfClient).Register(r)
+	api.NewController(wfClient, summaries).Register(r)
 
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.AppPort),

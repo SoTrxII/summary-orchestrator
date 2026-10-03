@@ -3,6 +3,7 @@ package summary_store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -310,5 +311,72 @@ func TestLoadTranscriptsSkipsAnUnreadableOne(t *testing.T) {
 	}
 	if len(transcripts) != 1 || transcripts[0].EpisodeId != "2" {
 		t.Fatalf("got %+v", transcripts)
+	}
+}
+
+// What is read back is what was written: the routes that serve these hand the
+// stored object to their caller untouched.
+func TestLoadReadsBackWhatSaveWrote(t *testing.T) {
+	binder := &test_utils.MockBinder{}
+	store := New("summaries", binder)
+	if _, err := store.SaveEpisode(context.Background(), "20", "3", "Le convoi quitte la ville."); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	binder.Data = binder.Calls[0].Data
+
+	got, err := store.LoadEpisode(context.Background(), "20", "3")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.CampaignId != "20" || got.EpisodeId != "3" || got.Summary != "Le convoi quitte la ville." {
+		t.Fatalf("read back %+v", got)
+	}
+	last := binder.Calls[len(binder.Calls)-1]
+	if last.Operation != "get" || last.Metadata["key"] != "campaigns/20/episodes/3/summary.json" {
+		t.Fatalf("read %q with %q", last.Metadata["key"], last.Operation)
+	}
+}
+
+func TestLoadCampaignReadsTheCampaignsOwnKey(t *testing.T) {
+	binder := &test_utils.MockBinder{Data: []byte(`{"campaignId":"20","summary":"Tout commence à Port-Réal."}`)}
+	got, err := New("summaries", binder).LoadCampaign(context.Background(), "20")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Summary != "Tout commence à Port-Réal." || got.EpisodeId != "" {
+		t.Fatalf("read back %+v", got)
+	}
+	if key := binder.Calls[0].Metadata["key"]; key != "campaigns/20/summary.json" {
+		t.Fatalf("read %q", key)
+	}
+}
+
+// "Not summarized yet" and "the bucket is down" look the same to the binding's
+// caller -- an error -- and must not look the same to the person asking. The
+// first message is the sidecar's own, copied from a live read of an episode
+// that does not exist.
+func TestLoadTellsAMissingSummaryFromAnUnreadableOne(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		data    []byte
+		err     error
+		missing bool
+	}{
+		{"nothing at that key", nil,
+			errors.New("error invoking output binding summaries: object not found"), true},
+		{"an object with no text in it", []byte(`{"campaignId":"20","episodeId":"3","summary":" "}`), nil, true},
+		{"a bucket that cannot be reached", nil, errors.New("dial tcp 10.43.0.1:9000: connection refused"), false},
+		{"an object that is not a summary", []byte(`<html>`), nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := New("summaries", &test_utils.MockBinder{Data: tc.data, Err: tc.err})
+			_, err := store.LoadEpisode(context.Background(), "20", "3")
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if got := errors.Is(err, ErrNoSummary); got != tc.missing {
+				t.Fatalf("ErrNoSummary = %v, want %v (%v)", got, tc.missing, err)
+			}
+		})
 	}
 }

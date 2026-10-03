@@ -2,6 +2,7 @@ package summary_store
 
 import (
 	"context"
+	"errors"
 
 	"summary-orchestrator/pkg/storyteller"
 )
@@ -25,6 +26,23 @@ type Transcript struct {
 	// The diarized dialogue, in the order it was spoken.
 	Lines []storyteller.Line `json:"lines"`
 }
+
+// Summary is a narrative as it sits in the bucket. EpisodeId is empty for the
+// summary of a whole campaign.
+//
+// The field names are a contract twice over: they are what is already stored,
+// and what the read routes hand to callers as is.
+type Summary struct {
+	CampaignId string `json:"campaignId"`
+	EpisodeId  string `json:"episodeId,omitempty"`
+	Summary    string `json:"summary"`
+}
+
+// ErrNoSummary means nothing has been written at that key. It is the expected
+// answer for an episode that was never summarized -- a one-shot collection, or
+// a session whose transcript is missing -- and is kept apart from a bucket
+// that cannot be read so a caller can say "not yet" rather than "broken".
+var ErrNoSummary = errors.New("no summary stored")
 
 // SummaryStore persists the generated summaries as objects, so the keys
 // published alongside a gist point at something real.
