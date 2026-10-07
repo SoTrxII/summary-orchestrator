@@ -41,6 +41,14 @@ type EpisodeInput struct {
 	// recording made before this, and every hand-submitted re-run -- and means
 	// nobody is marked, not that nobody runs the game.
 	GameMasterIds []string `json:"gameMasterIds"`
+	// Who plays whom in this campaign, as a game master declared it to Velvet.
+	// On the job for the same reason as GameMasterIds: the table is Velvet's.
+	//
+	// The whole campaign's list, not that of the players heard in this
+	// recording: the cast is one file per campaign, redrafted at every episode,
+	// and a list cut down to who showed up would demote the character of anyone
+	// who missed a session. Empty is normal and leaves the draft to the vote.
+	Characters []Character `json:"characters"`
 	// Ids of whisper tasks that have already run, in the same order as the
 	// keys they came from. Optional: set them to skip transcribing again and
 	// collect those tasks' results instead, which is what makes re-running a
@@ -90,6 +98,15 @@ type EpisodeInput struct {
 	// transcript is then replayed with TranscriptKey, in episode order, when
 	// the campaign's turn comes.
 	TranscribeOnly bool `json:"transcribeOnly"`
+}
+
+// Character is one declared player character.
+type Character struct {
+	Name string `json:"name"`
+	// Discord username of whoever plays it. A username rather than an id
+	// because that is the label this person's lines carry in the transcript
+	// (see speakers.Track.Label), which is what the cast is read against.
+	Player string `json:"player"`
 }
 
 // Keys is the recording, whichever form the caller expressed it in. The

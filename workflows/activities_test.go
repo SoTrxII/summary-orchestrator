@@ -649,6 +649,36 @@ func TestDraftCastHandsTheCurrentDraftToTheAgent(t *testing.T) {
 	}
 }
 
+// The declared characters reach the agent inside the cast, whether or not a
+// draft exists yet, and what a human added to that draft still goes with them.
+func TestDraftCastHandsTheDeclaredCharactersToTheAgent(t *testing.T) {
+	roster := []Character{{Name: "Kit", Player: "sotrx"}}
+	for _, current := range []string{"", `{"generated":true,"participants":["Alex"]}`} {
+		previous := deps
+		agent := &mockAgent{castResult: `{"generated":true}`}
+		deps = Deps{Agent: agent, Summaries: &fakeCastStore{cast: current, transcripts: threeTranscripts()}}
+
+		_, err := DraftCast(&fakeActivityContext{input: draftCastRequest{CampaignId: "30", Characters: roster}})
+		deps = previous
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		var sent struct {
+			Roster       []Character `json:"roster"`
+			Participants []string    `json:"participants"`
+		}
+		if err := json.Unmarshal([]byte(agent.castSent), &sent); err != nil {
+			t.Fatalf("cast sent is not JSON: %q", agent.castSent)
+		}
+		if len(sent.Roster) != 1 || sent.Roster[0] != roster[0] {
+			t.Fatalf("expected the roster in the cast sent, got %q", agent.castSent)
+		}
+		if current != "" && len(sent.Participants) != 1 {
+			t.Fatalf("the current draft was lost: %q", agent.castSent)
+		}
+	}
+}
+
 // The normal case: no cast yet, enough episodes archived. This is the whole
 // point of the feature -- a human corrects a draft instead of starting from
 // nothing.

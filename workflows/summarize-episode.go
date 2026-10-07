@@ -167,7 +167,7 @@ func SummarizeEpisode(ctx *workflow.WorkflowContext) (any, error) {
 	if !in.IsOneShot {
 		var castKey string
 		if err := ctx.CallActivity(DraftCast,
-			workflow.WithActivityInput(draftCastRequest{CampaignId: in.campaign()}),
+			workflow.WithActivityInput(draftCastRequest{CampaignId: in.campaign(), Characters: in.Characters}),
 			workflow.WithActivityRetryPolicy(transientRetry),
 		).Await(&castKey); err != nil {
 			log(fmt.Sprintf("could not draft the cast: %s", err))

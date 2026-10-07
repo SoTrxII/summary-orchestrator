@@ -71,6 +71,8 @@ type campaignSummaryRequest struct {
 
 type draftCastRequest struct {
 	CampaignId string `json:"campaignId"`
+	// See EpisodeInput.Characters.
+	Characters []Character `json:"characters"`
 }
 
 type loadTranscriptRequest struct {
@@ -256,11 +258,39 @@ func DraftCast(ctx workflow.ActivityContext) (any, error) {
 	// the table, which names are the real player characters, which are one
 	// person under two identities), and a redraft that did not carry those
 	// over would erase them on the next episode.
-	draft, err := deps.Agent.DraftCast(ctx.Context(), in.CampaignId, raw, current)
+	draft, err := deps.Agent.DraftCast(ctx.Context(), in.CampaignId, raw, withRoster(current, in.Characters))
 	if err != nil {
 		return nil, fmt.Errorf("drafting cast: %w", err)
 	}
 	return deps.Summaries.SaveCast(ctx.Context(), in.CampaignId, draft)
+}
+
+// withRoster adds the declared characters to the cast handed to the drafter,
+// under a "roster" key the agent reads and does not write back.
+//
+// Only that copy gets them, never the stored file: Velvet sends the list again
+// with every episode, so a character removed there is gone from the next draft
+// without anyone having to delete it here too. And it rides in the cast because
+// the cast already travels in this call -- the agent's protocol is unchanged.
+//
+// A cast that will not parse goes through as it is. The caller only gets this
+// far with an empty one or one it has just read "generated" from, so that
+// branch costs a declared list, never a draft.
+func withRoster(cast string, roster []Character) string {
+	if len(roster) == 0 {
+		return cast
+	}
+	fields := map[string]json.RawMessage{}
+	if cast != "" {
+		if err := json.Unmarshal([]byte(cast), &fields); err != nil {
+			return cast
+		}
+	}
+	// Neither Marshal can fail: one is given strings, the other raw values
+	// that were parsed a moment ago.
+	fields["roster"], _ = json.Marshal(roster)
+	out, _ := json.Marshal(fields)
+	return string(out)
 }
 
 // FetchTranscription collects the diarized transcript, or reports that it is
