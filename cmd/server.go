@@ -13,7 +13,6 @@ import (
 
 	"summary-orchestrator/internal/config"
 	audio_store "summary-orchestrator/pkg/audio-store"
-	session_lookup "summary-orchestrator/pkg/session-lookup"
 	"summary-orchestrator/pkg/storyteller"
 	summary_store "summary-orchestrator/pkg/summary-store"
 	"summary-orchestrator/pkg/transcriber"
@@ -67,15 +66,15 @@ func main() {
 
 	registry := workflow.NewRegistry()
 	err = workflows.Register(registry, workflows.Deps{
-		Audio:       audio_store.New(cfg.ObjectStore, cfg.PresignTTL, daprClient),
-		Transcriber: whisper,
-		Whisper:     whisper_lease.New(cfg.StateStore, daprClient, whisper.Status),
-		Agent:       storyteller.New(cfg.AgentEndpoint(), cfg.GatewayKey, cfg.StorytellerAgent, cfg.StorytellerViaGateway, &http.Client{Timeout: agentTimeout}),
-		Summaries:   summaries,
-		Sessions:    session_lookup.New(cfg.Db, daprClient),
-		Publisher:   daprClient,
-		PubSubName:  cfg.PubSub,
-		GistTopic:   cfg.GistTopic,
+		Audio:        audio_store.New(cfg.ObjectStore, cfg.PresignTTL, daprClient),
+		Transcriber:  whisper,
+		Whisper:      whisper_lease.New(cfg.StateStore, daprClient, whisper.Status),
+		Agent:        storyteller.New(cfg.AgentEndpoint(), cfg.GatewayKey, cfg.StorytellerAgent, cfg.StorytellerViaGateway, &http.Client{Timeout: agentTimeout}),
+		Summaries:    summaries,
+		Publisher:    daprClient,
+		PubSubName:   cfg.PubSub,
+		GistTopic:    cfg.GistTopic,
+		FailureTopic: cfg.FailureTopic,
 	})
 	if err != nil {
 		slog.Error(fmt.Sprintf("[Main] :: could not register the workflow : %s", err))

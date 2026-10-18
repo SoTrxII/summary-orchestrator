@@ -25,6 +25,26 @@ func SummarizeEpisode(ctx *workflow.WorkflowContext) (any, error) {
 			slog.Info(fmt.Sprintf("[SummarizeEpisode] :: job %s :: %s", in.JobId, msg))
 		}
 	}
+
+	out, err := summarize(ctx, in, log)
+	if err != nil {
+		// Only logged if it can't be told: the workflow fails either way
+		if pubErr := ctx.CallActivity(PublishFailure,
+			workflow.WithActivityInput(Failure{
+				CampaignId: in.CampaignId,
+				EpisodeId:  in.EpisodeId,
+				JobId:      in.JobId,
+				Error:      err.Error(),
+			}),
+			workflow.WithActivityRetryPolicy(transientRetry),
+		).Await(nil); pubErr != nil {
+			log(fmt.Sprintf("could not report the failure: %s", pubErr))
+		}
+	}
+	return out, err
+}
+
+func summarize(ctx *workflow.WorkflowContext, in EpisodeInput, log func(string)) (any, error) {
 	log(fmt.Sprintf("starting for campaign %d, episode %d", in.CampaignId, in.EpisodeId))
 
 	// 1-2. Transcribe. Whisper is asynchronous, so each job is two steps: one to
@@ -242,7 +262,7 @@ func SummarizeEpisode(ctx *workflow.WorkflowContext) (any, error) {
 		return nil, fmt.Errorf("writing gist: %w", err)
 	}
 
-	// 6. Publish it, once the episode actually exists in the database.
+	// 6. Publish it.
 	if err := ctx.CallActivity(PublishGist,
 		workflow.WithActivityInput(publishRequest{
 			CampaignId:  in.CampaignId,
@@ -251,7 +271,7 @@ func SummarizeEpisode(ctx *workflow.WorkflowContext) (any, error) {
 			EpisodeKey:  episodeKey,
 			CampaignKey: campaignKey,
 		}),
-		workflow.WithActivityRetryPolicy(gistRetry),
+		workflow.WithActivityRetryPolicy(transientRetry),
 	).Await(nil); err != nil {
 		return nil, fmt.Errorf("publishing gist: %w", err)
 	}

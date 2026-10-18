@@ -11,10 +11,10 @@ const (
 
 	DefaultObjectStore  = "object-store"
 	DefaultSummaryStore = "summaries"
-	DefaultDb           = "db"
 	DefaultPubSub       = "pubsub"
 	DefaultStateStore   = "statestore"
 	DefaultGistTopic    = "gists"
+	DefaultFailureTopic = "summary-failures"
 
 	DefaultWhisperUrl      = "http://whisper:8000"
 	DefaultWhisperLanguage = "fr"
@@ -33,7 +33,7 @@ const (
 
 	DefaultPresignTTL     = "6h"
 	DefaultServiceName    = "summary-orchestrator"
-	DefaultServiceVersion = "0.3.13"
+	DefaultServiceVersion = "0.4.0"
 )
 
 // Config is the whole runtime configuration, read once at startup.
@@ -47,9 +47,9 @@ type Config struct {
 	// Dapr component names
 	ObjectStore  string
 	SummaryStore string
-	Db           string
 	PubSub       string
 	GistTopic    string
+	FailureTopic string
 	// Holds the whisper lease. Needs first-write (ETag) concurrency.
 	StateStore string
 
@@ -91,9 +91,9 @@ func Parse() *Config {
 		DaprGrpcPort:       DefaultDaprGrpcPort,
 		ObjectStore:        DefaultObjectStore,
 		SummaryStore:       DefaultSummaryStore,
-		Db:                 DefaultDb,
 		PubSub:             DefaultPubSub,
 		GistTopic:          DefaultGistTopic,
+		FailureTopic:       DefaultFailureTopic,
 		StateStore:         DefaultStateStore,
 		WhisperUrl:         DefaultWhisperUrl,
 		WhisperLanguage:    DefaultWhisperLanguage,
@@ -113,9 +113,9 @@ func Parse() *Config {
 
 	strEnv("OBJECT_STORE_NAME", &c.ObjectStore)
 	strEnv("SUMMARY_STORE_NAME", &c.SummaryStore)
-	strEnv("DB_NAME", &c.Db)
 	strEnv("PUBSUB_NAME", &c.PubSub)
 	strEnv("GIST_TOPIC", &c.GistTopic)
+	strEnv("FAILURE_TOPIC", &c.FailureTopic)
 	strEnv("STATE_STORE_NAME", &c.StateStore)
 
 	strEnv("WHISPER_URL", &c.WhisperUrl)

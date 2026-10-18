@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	session_lookup "summary-orchestrator/pkg/session-lookup"
 	summary_store "summary-orchestrator/pkg/summary-store"
 	whisper_lease "summary-orchestrator/pkg/whisper-lease"
 	test_utils "summary-orchestrator/test-utils"
@@ -54,14 +53,14 @@ func TestRetryableSurvivesSerialization(t *testing.T) {
 	}
 }
 
-func withDeps(t *testing.T, sessions *test_utils.MockSessionLookup, publisher *test_utils.MockPublisher) {
+func withDeps(t *testing.T, publisher *test_utils.MockPublisher) {
 	t.Helper()
 	previous := deps
 	deps = Deps{
-		Sessions:   sessions,
-		Publisher:  publisher,
-		PubSubName: "pubsub",
-		GistTopic:  "gists",
+		Publisher:    publisher,
+		PubSubName:   "pubsub",
+		GistTopic:    "gists",
+		FailureTopic: "summary-failures",
 	}
 	t.Cleanup(func() { deps = previous })
 }
@@ -76,30 +75,11 @@ func publishInput() publishRequest {
 	}
 }
 
-// The summary is usually ready before the video finishes uploading, so the
-// session row it attaches to does not exist yet. That has to read as "wait",
-// not as "fail".
-func TestPublishGistWaitsForTheSessionRow(t *testing.T) {
-	sessions := &test_utils.MockSessionLookup{Err: session_lookup.ErrSessionNotReady}
+// The session number travels as the job gave it: Velvet numbered the row at
+// /session start and owns the database, so nothing here reads it.
+func TestPublishGistFilesTheGistUnderTheJobsSession(t *testing.T) {
 	publisher := &test_utils.MockPublisher{}
-	withDeps(t, sessions, publisher)
-
-	_, err := PublishGist(&fakeActivityContext{input: publishInput()})
-	if !isRetryable(err) {
-		t.Fatalf("expected a retryable error, got %v", err)
-	}
-	if len(publisher.Events) != 0 {
-		t.Fatal("nothing may be published before the session exists")
-	}
-}
-
-// Velvet numbers episodes by counting existing sessions; the database numbers
-// them by incrementing the highest. Delete a session and those disagree. The
-// gist is keyed on the database's answer, so that is the one published.
-func TestPublishGistUsesTheDatabaseSessionNumber(t *testing.T) {
-	sessions := &test_utils.MockSessionLookup{Number: 3}
-	publisher := &test_utils.MockPublisher{}
-	withDeps(t, sessions, publisher)
+	withDeps(t, publisher)
 
 	if _, err := PublishGist(&fakeActivityContext{input: publishInput()}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -107,31 +87,37 @@ func TestPublishGistUsesTheDatabaseSessionNumber(t *testing.T) {
 	if len(publisher.Events) != 1 {
 		t.Fatalf("expected exactly one event, got %d", len(publisher.Events))
 	}
-
 	event := publisher.Events[0]
 	if event.PubSub != "pubsub" || event.Topic != "gists" {
 		t.Fatalf("published to %s/%s", event.PubSub, event.Topic)
 	}
 	gist, ok := event.Data.(Gist)
-	if !ok {
-		t.Fatalf("expected a Gist, got %T", event.Data)
-	}
-	if gist.EpisodeId != 3 {
-		t.Fatalf("expected the database's session number 3, got %d", gist.EpisodeId)
-	}
-	if gist.CampaignId != 14 || gist.Summary == "" || gist.EpisodeKey == "" || gist.CampaignKey == "" {
-		t.Fatalf("summary-updater requires every field, got %+v", gist)
+	if !ok || gist.CampaignId != 14 || gist.EpisodeId != 4 || gist.Summary == "" {
+		t.Fatalf("got %+v", event.Data)
 	}
 }
 
-// A sidecar blip is worth waiting out too, otherwise a finished summary is
-// thrown away over a momentary failure.
+// A sidecar blip is worth waiting out, otherwise a finished summary is thrown
+// away over a momentary failure.
 func TestPublishGistRetriesOnPublishFailure(t *testing.T) {
-	withDeps(t, &test_utils.MockSessionLookup{Number: 4}, &test_utils.MockPublisher{Err: errors.New("sidecar down")})
+	withDeps(t, &test_utils.MockPublisher{Err: errors.New("sidecar down")})
 
 	_, err := PublishGist(&fakeActivityContext{input: publishInput()})
 	if !isRetryable(err) {
 		t.Fatalf("expected a retryable error, got %v", err)
+	}
+}
+
+func TestPublishFailureGoesToItsOwnTopic(t *testing.T) {
+	publisher := &test_utils.MockPublisher{}
+	withDeps(t, publisher)
+
+	in := Failure{CampaignId: 14, EpisodeId: 4, JobId: "job", Error: "transcribing task t: whisper died"}
+	if _, err := PublishFailure(&fakeActivityContext{input: in}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(publisher.Events) != 1 || publisher.Events[0].Topic != "summary-failures" || publisher.Events[0].Data != in {
+		t.Fatalf("got %+v", publisher.Events)
 	}
 }
 
@@ -379,8 +365,7 @@ func TestWriteEpisodeSummaryDatesTheEpisodeFromItsRecording(t *testing.T) {
 	previous := deps
 	agent := &mockAgent{}
 	audio := &mockAudioStore{recordedAt: time.Date(2026, 1, 5, 22, 5, 18, 0, time.UTC)}
-	deps = Deps{Audio: audio, Agent: agent, Summaries: &mockSummaries{},
-		Sessions: &test_utils.MockSessionLookup{}}
+	deps = Deps{Audio: audio, Agent: agent, Summaries: &mockSummaries{}}
 	t.Cleanup(func() { deps = previous })
 
 	_, err := WriteEpisodeSummary(&fakeActivityContext{input: episodeSummaryRequest{
@@ -411,7 +396,6 @@ func TestWriteEpisodeSummarySurvivesAnUndatableRecording(t *testing.T) {
 		Audio:     &mockAudioStore{recordedAtErr: errors.New("not in the bucket")},
 		Agent:     agent,
 		Summaries: &mockSummaries{},
-		Sessions:  &test_utils.MockSessionLookup{DateErr: session_lookup.ErrSessionNotReady},
 	}
 	t.Cleanup(func() { deps = previous })
 
@@ -432,8 +416,7 @@ func TestWriteEpisodeSummarySurvivesAnUndatableRecording(t *testing.T) {
 func TestWriteEpisodeSummaryWithNoKeysDoesNotAskForADate(t *testing.T) {
 	previous := deps
 	audio := &mockAudioStore{}
-	deps = Deps{Audio: audio, Agent: &mockAgent{}, Summaries: &mockSummaries{},
-		Sessions: &test_utils.MockSessionLookup{DateErr: session_lookup.ErrSessionNotReady}}
+	deps = Deps{Audio: audio, Agent: &mockAgent{}, Summaries: &mockSummaries{}}
 	t.Cleanup(func() { deps = previous })
 
 	if _, err := WriteEpisodeSummary(&fakeActivityContext{input: episodeSummaryRequest{
@@ -446,76 +429,13 @@ func TestWriteEpisodeSummaryWithNoKeysDoesNotAskForADate(t *testing.T) {
 	}
 }
 
-// Campaign 22's first two episodes: recorded in 2023, summarized now, and their
-// audio long since pruned from the bucket. Undated they would be stamped at
-// ingestion -- i.e. today -- which puts the campaign's oldest sessions after its
-// newest ones and hands every contradiction to the wrong episode. The session
-// row still carries the play date someone typed during the backfill.
-func TestWriteEpisodeSummaryFallsBackToTheSessionRow(t *testing.T) {
-	previous := deps
-	agent := &mockAgent{}
-	sessions := &test_utils.MockSessionLookup{
-		Date: time.Date(2023, 2, 18, 0, 0, 0, 0, time.UTC),
-	}
-	deps = Deps{
-		Audio:     &mockAudioStore{recordedAtErr: errors.New("not in the bucket")},
-		Agent:     agent,
-		Summaries: &mockSummaries{},
-		Sessions:  sessions,
-	}
-	t.Cleanup(func() { deps = previous })
-
-	if _, err := WriteEpisodeSummary(&fakeActivityContext{input: episodeSummaryRequest{
-		CampaignId: "22", EpisodeId: "1", AudioKeys: []string{"1.ogg"},
-	}}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if agent.recordedAt != "2023-02-18T00:00:00Z" {
-		t.Fatalf("got %q", agent.recordedAt)
-	}
-	if len(sessions.DateArgs) != 1 || sessions.DateArgs[0] != [2]int{22, 1} {
-		t.Fatalf("looked up %v", sessions.DateArgs)
-	}
-}
-
-// The bucket is the trustworthy source when it can answer, so the database is
-// not consulted at all -- createdAt trails the recording and for a live episode
-// the row may not even exist yet.
-func TestWriteEpisodeSummaryPrefersTheBucketOverTheDatabase(t *testing.T) {
-	previous := deps
-	agent := &mockAgent{}
-	sessions := &test_utils.MockSessionLookup{
-		Date: time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC),
-	}
-	deps = Deps{
-		Audio:     &mockAudioStore{recordedAt: time.Date(2026, 1, 5, 22, 5, 18, 0, time.UTC)},
-		Agent:     agent,
-		Summaries: &mockSummaries{},
-		Sessions:  sessions,
-	}
-	t.Cleanup(func() { deps = previous })
-
-	if _, err := WriteEpisodeSummary(&fakeActivityContext{input: episodeSummaryRequest{
-		CampaignId: "22", EpisodeId: "4", AudioKeys: []string{"155111112.ogg"},
-	}}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if agent.recordedAt != "2026-01-05T22:05:18Z" {
-		t.Fatalf("got %q", agent.recordedAt)
-	}
-	if len(sessions.DateArgs) != 0 {
-		t.Fatalf("asked the database despite having the object: %v", sessions.DateArgs)
-	}
-}
-
 // The hand-set override is for the case where the operator knows something
-// neither lookup does, so it beats both without consulting either.
+// the bucket does not, so it wins without consulting it.
 func TestWriteEpisodeSummaryHonoursTheCallerSuppliedDate(t *testing.T) {
 	previous := deps
 	agent := &mockAgent{}
 	audio := &mockAudioStore{recordedAt: time.Date(2026, 1, 5, 22, 5, 18, 0, time.UTC)}
-	sessions := &test_utils.MockSessionLookup{}
-	deps = Deps{Audio: audio, Agent: agent, Summaries: &mockSummaries{}, Sessions: sessions}
+	deps = Deps{Audio: audio, Agent: agent, Summaries: &mockSummaries{}}
 	t.Cleanup(func() { deps = previous })
 
 	if _, err := WriteEpisodeSummary(&fakeActivityContext{input: episodeSummaryRequest{
@@ -528,8 +448,8 @@ func TestWriteEpisodeSummaryHonoursTheCallerSuppliedDate(t *testing.T) {
 	if agent.recordedAt != "2023-02-18T00:00:00Z" {
 		t.Fatalf("got %q", agent.recordedAt)
 	}
-	if len(audio.dated) != 0 || len(sessions.DateArgs) != 0 {
-		t.Fatalf("consulted a lookup despite being told the date")
+	if len(audio.dated) != 0 {
+		t.Fatalf("consulted the bucket despite being told the date")
 	}
 }
 
@@ -789,7 +709,7 @@ func TestDraftCastFailsOnAListingError(t *testing.T) {
 func TestWriteEpisodeSummaryTellsTheAgentWhenTheSessionIsAOneShot(t *testing.T) {
 	previous := deps
 	agent := &mockAgent{}
-	deps = Deps{Audio: &mockAudioStore{}, Agent: agent, Summaries: &mockSummaries{}, Sessions: &test_utils.MockSessionLookup{}}
+	deps = Deps{Audio: &mockAudioStore{}, Agent: agent, Summaries: &mockSummaries{}}
 	t.Cleanup(func() { deps = previous })
 
 	if _, err := WriteEpisodeSummary(&fakeActivityContext{input: episodeSummaryRequest{

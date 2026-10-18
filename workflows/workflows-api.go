@@ -8,7 +8,6 @@ import (
 
 	"summary-orchestrator/internal/utils"
 	audio_store "summary-orchestrator/pkg/audio-store"
-	session_lookup "summary-orchestrator/pkg/session-lookup"
 	"summary-orchestrator/pkg/storyteller"
 	summary_store "summary-orchestrator/pkg/summary-store"
 	"summary-orchestrator/pkg/transcriber"
@@ -61,10 +60,11 @@ type EpisodeInput struct {
 	// types, and it is what the pipeline uses.
 	//
 	// It exists for the case the pipeline cannot answer -- re-summarizing an
-	// archived episode whose recording has been pruned from the bucket. Without
-	// it such an episode is stamped at ingestion, which puts the campaign's
-	// oldest sessions *after* its newest ones in the graph's chronology and
-	// hands every contradiction to the wrong episode.
+	// archived episode whose recording has been pruned from the bucket, a
+	// TranscriptKey replay included. Without it such an episode is stamped at
+	// ingestion, which puts the campaign's oldest sessions *after* its newest
+	// ones in the graph's chronology and hands every contradiction to the wrong
+	// episode. The play date is the session row's createdAt in rpg-db.
 	RecordedAt string `json:"recordedAt"`
 	// Key of a transcript that already exists in the summaries bucket. Set it
 	// to summarize from that instead of transcribing anything at all.
@@ -138,8 +138,8 @@ func oneOrMany(many []string, one string) []string {
 func (e EpisodeInput) campaign() string { return strconv.Itoa(e.CampaignId) }
 func (e EpisodeInput) episode() string  { return strconv.Itoa(e.EpisodeId) }
 
-// Gist is the payload summary-updater expects on the gists topic. Every field
-// is required on its side, including the two keys it does not currently read.
+// Gist is what Velvet reads on the gists topic. It stores the summary and
+// ignores the two keys.
 type Gist struct {
 	CampaignId  int    `json:"campaignId"`
 	EpisodeId   int    `json:"episodeId"`
@@ -148,19 +148,27 @@ type Gist struct {
 	CampaignKey string `json:"campaignKey"`
 }
 
+// Failure is published instead of a Gist when the workflow gives up.
+type Failure struct {
+	CampaignId int    `json:"campaignId"`
+	EpisodeId  int    `json:"episodeId"`
+	JobId      string `json:"jobId"`
+	Error      string `json:"error"`
+}
+
 // Deps are the services the activities run against. Activities are plain
 // functions the runtime discovers by name, so they cannot be closures over a
 // constructor's arguments; the wiring lives here instead.
 type Deps struct {
-	Audio       audio_store.AudioStore
-	Transcriber transcriber.Transcriber
-	Whisper     whisper_lease.Lease
-	Agent       storyteller.Storyteller
-	Summaries   summary_store.SummaryStore
-	Sessions    session_lookup.SessionLookup
-	Publisher   utils.Publisher
-	PubSubName  string
-	GistTopic   string
+	Audio        audio_store.AudioStore
+	Transcriber  transcriber.Transcriber
+	Whisper      whisper_lease.Lease
+	Agent        storyteller.Storyteller
+	Summaries    summary_store.SummaryStore
+	Publisher    utils.Publisher
+	PubSubName   string
+	GistTopic    string
+	FailureTopic string
 }
 
 var deps Deps
@@ -189,6 +197,7 @@ func Register(r *workflow.Registry, d Deps) error {
 		StoreCampaignSummary,
 		WriteGist,
 		PublishGist,
+		PublishFailure,
 	}
 	for _, a := range activities {
 		if err := r.AddActivity(a); err != nil {
@@ -279,18 +288,6 @@ var campaignRetry = &workflow.RetryPolicy{
 	BackoffCoefficient:   1.5,
 	MaxRetryInterval:     2 * time.Minute,
 	RetryTimeout:         20 * time.Minute,
-}
-
-// gistRetry waits for the rest of the pipeline to catch up. The session row
-// this gist attaches to is only written once the video has finished
-// uploading, which can happen well after the summary is ready.
-var gistRetry = &workflow.RetryPolicy{
-	MaxAttempts:          12,
-	InitialRetryInterval: 30 * time.Second,
-	BackoffCoefficient:   2,
-	MaxRetryInterval:     10 * time.Minute,
-	RetryTimeout:         2 * time.Hour,
-	Handle:               isRetryable,
 }
 
 // noRetry is for the one step that must not run twice: writing the episode

@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"time"
 
-	session_lookup "summary-orchestrator/pkg/session-lookup"
 	"summary-orchestrator/pkg/storyteller"
 	summary_store "summary-orchestrator/pkg/summary-store"
 	"summary-orchestrator/pkg/transcriber"
@@ -369,19 +367,19 @@ func WriteEpisodeSummary(ctx workflow.ActivityContext) (any, error) {
 // recordedAt establishes when the session was played, or returns "" when
 // nothing can answer.
 //
-// Three sources, most trustworthy first:
+// Two sources, most trustworthy first:
 //
-//  1. What the caller said. Only ever set by hand, and only when the two below
-//     are known to be unable to answer, so it wins outright.
+//  1. What the caller said. Only ever set by hand, and only when the bucket is
+//     known to be unable to answer, so it wins outright.
 //  2. The recording's own last-modified date. The normal path: cooking-server
 //     writes the object minutes after the table breaks up. The first key, not
 //     the last -- a session that dropped and resumed comes back as consecutive
 //     chunks, and the episode belongs at the moment it started.
-//  3. The session row's createdAt. For a normal episode this is the same
-//     evening, minutes later; for one backfilled by hand it is the play date
-//     someone typed. It is third rather than unused because the object can be
-//     pruned while the row survives -- campaign 22's first two episodes are
-//     exactly that, dated 2023 with no audio left in the bucket.
+//
+// The session row's createdAt used to come third, for episodes whose audio was
+// pruned while the row survived (campaign 22's first two, played in 2023). It
+// was the only read of rpg-db left, a database Velvet owns: such an episode is
+// only ever replayed by hand, and whoever replays it passes RecordedAt.
 //
 // Never fails the activity. WriteEpisodeSummary runs under noRetry because it
 // writes to the knowledge graph, so an error here would cost the episode its
@@ -391,29 +389,13 @@ func recordedAt(ctx workflow.ActivityContext, in episodeSummaryRequest) string {
 	if supplied := strings.TrimSpace(in.RecordedAt); supplied != "" {
 		return supplied
 	}
-
-	if len(in.AudioKeys) > 0 {
-		when, err := deps.Audio.RecordedAt(ctx.Context(), in.AudioKeys[0])
-		if err == nil {
-			return when.UTC().Format(time.RFC3339)
-		}
-		slog.Info(fmt.Sprintf("[WriteEpisodeSummary] :: cannot date %s from the bucket (%s), "+
-			"falling back to the session row", in.AudioKeys[0], err))
-	}
-
-	// Numeric ids everywhere else in this workflow; the strings here are only
-	// what the agent's wire format wants. A non-numeric one cannot key the
-	// session table, so there is nothing to look up.
-	campaignId, campaignErr := strconv.Atoi(in.CampaignId)
-	episodeId, episodeErr := strconv.Atoi(in.EpisodeId)
-	if campaignErr != nil || episodeErr != nil {
+	if len(in.AudioKeys) == 0 {
 		return ""
 	}
-
-	when, err := deps.Sessions.SessionDate(ctx.Context(), campaignId, episodeId)
+	when, err := deps.Audio.RecordedAt(ctx.Context(), in.AudioKeys[0])
 	if err != nil {
-		slog.Info(fmt.Sprintf("[WriteEpisodeSummary] :: no date for campaign %d episode %d (%s), "+
-			"the episode will be stamped at ingestion", campaignId, episodeId, err))
+		slog.Info(fmt.Sprintf("[WriteEpisodeSummary] :: cannot date %s from the bucket (%s), "+
+			"the episode will be stamped at ingestion", in.AudioKeys[0], err))
 		return ""
 	}
 	return when.UTC().Format(time.RFC3339)
@@ -454,32 +436,21 @@ func WriteGist(ctx workflow.ActivityContext) (any, error) {
 	return deps.Agent.Gist(ctx.Context(), in.CampaignId, in.EpisodeId, in.Summary)
 }
 
-// PublishGist resolves the episode's real session number, then hands the gist
-// to summary-updater.
+// PublishGist hands the gist to Velvet, which keeps a copy beside the session.
 //
-// The lookup is the point of the step: a gist is keyed on the session row, and
-// that row is only written once the video has finished uploading. Reporting
-// "not ready" is what makes the workflow's backoff wait for the rest of the
-// pipeline instead of racing it.
+// The session number is the one the job came with: Velvet numbers the row at
+// /session start, hours before any gist, so there is nothing left to wait for
+// or to confirm. A gist for a session that does not exist is Velvet's to
+// refuse.
 func PublishGist(ctx workflow.ActivityContext) (any, error) {
 	var in publishRequest
 	if err := ctx.GetInput(&in); err != nil {
 		return nil, err
 	}
 
-	sessionNumber, err := deps.Sessions.SessionNumber(ctx.Context(), in.CampaignId, in.EpisodeId)
-	if err != nil {
-		// Both "no row yet" and a database blip are worth waiting out; only
-		// a malformed response is not.
-		if errors.Is(err, session_lookup.ErrSessionNotReady) {
-			return nil, retryable(fmt.Errorf("campaign %d episode %d: %w", in.CampaignId, in.EpisodeId, err))
-		}
-		return nil, retryable(err)
-	}
-
 	gist := Gist{
 		CampaignId:  in.CampaignId,
-		EpisodeId:   sessionNumber,
+		EpisodeId:   in.EpisodeId,
 		Summary:     in.Summary,
 		EpisodeKey:  in.EpisodeKey,
 		CampaignKey: in.CampaignKey,
@@ -487,5 +458,16 @@ func PublishGist(ctx workflow.ActivityContext) (any, error) {
 	if err := deps.Publisher.PublishEvent(ctx.Context(), deps.PubSubName, deps.GistTopic, gist); err != nil {
 		return nil, retryable(err)
 	}
-	return sessionNumber, nil
+	return nil, nil
+}
+
+// PublishFailure tells Velvet the episode will get no summary. Without it a
+// workflow that dies after hours of whisper leaves the session's channel
+// waiting for a gist that never comes.
+func PublishFailure(ctx workflow.ActivityContext) (any, error) {
+	var in Failure
+	if err := ctx.GetInput(&in); err != nil {
+		return nil, err
+	}
+	return nil, deps.Publisher.PublishEvent(ctx.Context(), deps.PubSubName, deps.FailureTopic, in)
 }
