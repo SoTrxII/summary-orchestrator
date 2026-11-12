@@ -1,6 +1,7 @@
 package workflows
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,6 +48,10 @@ type transcriptionResult struct {
 	AudioKey string `json:"audioKey"`
 	// Discord ids of whoever runs this campaign, as the caller supplied them.
 	GameMasterIds []string `json:"gameMasterIds"`
+	// Whisper tasks of the parts recorded before this one, in order. encode-box
+	// puts the parts end to end in one video, so their lengths add up to where
+	// this part starts on the video's clock.
+	PreviousTaskIds []string `json:"previousTaskIds,omitempty"`
 }
 
 type episodeSummaryRequest struct {
@@ -96,6 +101,7 @@ type publishRequest struct {
 	Summary     string `json:"summary"`
 	EpisodeKey  string `json:"episodeKey"`
 	CampaignKey string `json:"campaignKey"`
+	JobId       string `json:"jobId,omitempty"`
 }
 
 // PresignAudio turns a cooked audio key into a URL whisper can fetch itself.
@@ -320,6 +326,7 @@ func FetchTranscription(ctx workflow.ActivityContext) (any, error) {
 	for _, id := range in.GameMasterIds {
 		gms[id] = true
 	}
+	offset, timed := videoOffset(ctx.Context(), in.PreviousTaskIds)
 
 	lines := make([]storyteller.Line, 0, len(segments))
 	named := 0
@@ -336,7 +343,12 @@ func FetchTranscription(ctx workflow.ActivityContext) (any, error) {
 			speaker = track.Label(gms[track.UserId])
 			named++
 		}
-		lines = append(lines, storyteller.Line{Speaker: speaker, Text: text})
+		line := storyteller.Line{Speaker: speaker, Text: text}
+		if timed {
+			start, end := s.Start+offset, s.End+offset
+			line.Start, line.End = &start, &end
+		}
+		lines = append(lines, line)
 	}
 	if named > 0 {
 		slog.Info(fmt.Sprintf("[FetchTranscription] :: %d/%d lines attributed to a named participant", named, len(lines)))
@@ -345,6 +357,25 @@ func FetchTranscription(ctx workflow.ActivityContext) (any, error) {
 		return nil, fmt.Errorf("transcription %s produced no usable dialogue", in.TaskId)
 	}
 	return lines, nil
+}
+
+// videoOffset is where a part starts on the session video's clock: the summed
+// lengths of the parts before it. Reports false when one cannot be read, and
+// the part's lines then go without times: a transcript is worth more than
+// chapters, and a guessed offset would put every chapter after it in the
+// wrong place. Measured on 22/3: whisper's times match the video's within
+// 0.03 s, with no lead-in and no drift over 88 minutes.
+func videoOffset(ctx context.Context, previous []string) (float64, bool) {
+	var offset float64
+	for _, id := range previous {
+		d, err := deps.Transcriber.AudioDuration(ctx, id)
+		if err != nil {
+			slog.Warn(fmt.Sprintf("[FetchTranscription] :: no length for earlier part %s (%s), this part's lines go without times", id, err))
+			return 0, false
+		}
+		offset += d
+	}
+	return offset, true
 }
 
 // WriteEpisodeSummary asks the agent for the chapter. Not idempotent: the
@@ -454,6 +485,7 @@ func PublishGist(ctx workflow.ActivityContext) (any, error) {
 		Summary:     in.Summary,
 		EpisodeKey:  in.EpisodeKey,
 		CampaignKey: in.CampaignKey,
+		JobId:       in.JobId,
 	}
 	if err := deps.Publisher.PublishEvent(ctx.Context(), deps.PubSubName, deps.GistTopic, gist); err != nil {
 		return nil, retryable(err)

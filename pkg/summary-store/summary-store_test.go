@@ -380,3 +380,15 @@ func TestLoadTellsAMissingSummaryFromAnUnreadableOne(t *testing.T) {
 		})
 	}
 }
+
+// An episode replayed from its archive must keep its times, or its video can
+// never get chapters again.
+func TestParseTranscriptKeepsTimes(t *testing.T) {
+	lines, err := ParseTranscript([]byte(`{"lines":[{"speaker":"a","text":" Bonjour ","start":0,"end":1.5}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines[0].Start == nil || *lines[0].Start != 0 || *lines[0].End != 1.5 {
+		t.Fatalf("times lost: %+v", lines[0])
+	}
+}

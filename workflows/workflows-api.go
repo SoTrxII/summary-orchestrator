@@ -146,6 +146,9 @@ type Gist struct {
 	Summary     string `json:"summary"`
 	EpisodeKey  string `json:"episodeKey"`
 	CampaignKey string `json:"campaignKey"`
+	// The processing job the episode came from, which is also this workflow's
+	// id: processing-orchestrator finds the video it uploaded by it.
+	JobId string `json:"jobId,omitempty"`
 }
 
 // Failure is published instead of a Gist when the workflow gives up.

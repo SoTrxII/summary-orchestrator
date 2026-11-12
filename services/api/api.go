@@ -16,15 +16,17 @@ import (
 )
 
 // Controller exposes the workflow over HTTP, and what it has written.
-// processing-orchestrator posts here once a recording has finished cooking;
-// Velvet reads the summaries back.
+// processing-orchestrator posts here once a recording has finished cooking,
+// and again for the chapters once the gist and the video both exist; Velvet
+// reads the summaries back.
 type Controller struct {
 	client    Scheduler
 	summaries SummaryReader
+	chapters  *ChapterService
 }
 
-func NewController(client Scheduler, summaries SummaryReader) *Controller {
-	return &Controller{client, summaries}
+func NewController(client Scheduler, summaries SummaryReader, chapters *ChapterService) *Controller {
+	return &Controller{client, summaries, chapters}
 }
 
 func (c *Controller) Register(r gin.IRouter) {
@@ -38,6 +40,7 @@ func (c *Controller) Register(r gin.IRouter) {
 	{
 		campaign.GET("/summary", c.CampaignSummary)
 		campaign.GET("/episodes/:episode/summary", c.EpisodeSummary)
+		campaign.POST("/episodes/:episode/chapters", c.EpisodeChapters)
 	}
 }
 

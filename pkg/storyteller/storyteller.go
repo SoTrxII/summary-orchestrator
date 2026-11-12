@@ -107,6 +107,17 @@ func (a *A2A) Gist(ctx context.Context, campaignId, episodeId, summary string) (
 		campaignId, episodeId, summary))
 }
 
+// Chapters asks for an episode's YouTube chapters. The lines go as they are:
+// the agent reads only their times and text, and skips a line without times.
+func (a *A2A) Chapters(ctx context.Context, campaignId, episodeId, chapter string, lines []Line) (string, error) {
+	content, err := json.Marshal(map[string]any{"chronique": chapter, "lignes": lines})
+	if err != nil {
+		return "", err
+	}
+	return a.send(ctx, fmt.Sprintf(
+		"Tâche: chapitres\nCampagne: %s\nEpisode: %s\n[CONTENU]\n%s", campaignId, episodeId, content))
+}
+
 // DraftCast asks the agent to count a first-pass cast off the campaign's
 // transcripts. The whole campaign goes in one call rather than one per
 // episode: a speaker label means nothing outside the episode it came from, so

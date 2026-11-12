@@ -55,7 +55,7 @@ func get(t *testing.T, path string, summaries *mockSummaries) *httptest.Response
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	NewController(&mockScheduler{}, summaries).Register(r)
+	NewController(&mockScheduler{}, summaries, nil).Register(r)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
@@ -67,7 +67,7 @@ func post(t *testing.T, body string) (*httptest.ResponseRecorder, *mockScheduler
 	gin.SetMode(gin.TestMode)
 	sched := &mockScheduler{}
 	r := gin.New()
-	NewController(sched, &mockSummaries{}).Register(r)
+	NewController(sched, &mockSummaries{}, nil).Register(r)
 
 	req := httptest.NewRequest(http.MethodPost, "/workflows/episode", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

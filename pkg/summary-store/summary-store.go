@@ -39,6 +39,18 @@ func TranscriptKey(campaignId, episodeId string) string {
 	return fmt.Sprintf("campaigns/%s/episodes/%s/transcript.json", campaignId, episodeId)
 }
 
+// ChaptersKey is where an episode's YouTube chapters are kept, beside the
+// chapter and transcript they were placed from.
+func ChaptersKey(campaignId, episodeId string) string {
+	return fmt.Sprintf("campaigns/%s/episodes/%s/chapters.json", campaignId, episodeId)
+}
+
+// SaveChapters stores an episode's chapters as given and returns the key.
+func (s *DaprSummaryStore) SaveChapters(ctx context.Context, campaignId, episodeId string, chapters []byte) (string, error) {
+	key := ChaptersKey(campaignId, episodeId)
+	return key, s.put(ctx, key, chapters)
+}
+
 // CastKey is where a campaign's cast list lives. It sits beside the campaign
 // summary rather than under an episode: the cast is a property of the campaign,
 // and every episode of it reads the same file.
@@ -295,7 +307,10 @@ func clean(lines []storyteller.Line) []storyteller.Line {
 		if speaker == "" {
 			speaker = "UNKNOWN"
 		}
-		out = append(out, storyteller.Line{Speaker: speaker, Text: text})
+		// Copied whole, not rebuilt: a field added to Line (the times) would
+		// otherwise be dropped from every episode replayed from its archive.
+		l.Speaker, l.Text = speaker, text
+		out = append(out, l)
 	}
 	return out
 }

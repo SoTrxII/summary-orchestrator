@@ -29,6 +29,12 @@ type Transcriber interface {
 	Start(ctx context.Context, audioUrl string, maxSpeakers int) (taskId string, err error)
 	// Result returns the diarized segments, or ErrStillRunning.
 	Result(ctx context.Context, taskId string) ([]Segment, error)
+	// AudioDuration is the length of the audio a task transcribed, in
+	// seconds. A session recorded in several parts becomes one video with the
+	// parts end to end, so this is what shifts a later part's times onto the
+	// video's clock. The last segment's end is not it: a part can end on
+	// minutes of silence.
+	AudioDuration(ctx context.Context, taskId string) (float64, error)
 	// Status reports whether a task is still occupying whisper: "queued",
 	// "processing", "completed", "failed", or StatusMissing when whisper has
 	// no record of it. An error means whisper could not be asked, which is

@@ -186,3 +186,17 @@ func TestStatusOfAFailingServerIsAnError(t *testing.T) {
 		t.Fatalf("expected an error, got %q", got)
 	}
 }
+
+// metadata.duration is how long whisper worked (19,730 s for 29/12), not how
+// long the audio is (5,503 s): taking it would push a second part hours late.
+func TestAudioDurationReadsTheAudioNotTheProcessingTime(t *testing.T) {
+	w := serving(t, 200, `{"status":"completed","result":{"segments":[]},
+		"metadata":{"duration":19730.07,"audio_duration":5503.477},"error":null}`)
+	d, err := w.AudioDuration(context.Background(), "abc")
+	if err != nil || d != 5503.477 {
+		t.Fatalf("expected 5503.477, got %v (%v)", d, err)
+	}
+	if _, err := serving(t, 200, `{"status":"completed","metadata":{}}`).AudioDuration(context.Background(), "abc"); err == nil {
+		t.Fatal("a task with no audio length must be an error, not 0")
+	}
+}

@@ -188,6 +188,15 @@ func TestCountSpeakersReportsTheRoster(t *testing.T) {
 // mockTranscriber returns a fixed diarized transcript.
 type mockTranscriber struct {
 	segments []transcriber.Segment
+	// Audio length per task id; a task absent from it cannot be measured.
+	durations map[string]float64
+}
+
+func (m *mockTranscriber) AudioDuration(_ context.Context, taskId string) (float64, error) {
+	if d, ok := m.durations[taskId]; ok {
+		return d, nil
+	}
+	return 0, fmt.Errorf("task %s reports no audio duration", taskId)
 }
 
 func (m *mockTranscriber) Start(_ context.Context, _ string, _ int) (string, error) {
@@ -301,6 +310,46 @@ func TestFetchTranscriptionNamesSpeakersFromTheTimeline(t *testing.T) {
 	}
 }
 
+// A session recorded in two parts is one video, the parts end to end: the
+// second part's lines must land after the whole first part, not at its own
+// zero. Placed by the first part's audio length, not by where its last line
+// ended -- a part can end on minutes of silence.
+func TestFetchTranscriptionPutsTimesOnTheVideosClock(t *testing.T) {
+	previous := deps
+	deps = Deps{
+		Transcriber: &mockTranscriber{segments: diarized(), durations: map[string]float64{"part1": 3600.5}},
+		Audio:       &mockAudioStore{timelineErr: errors.New("NoSuchKey")},
+	}
+	t.Cleanup(func() { deps = previous })
+
+	first, err := FetchTranscription(&fakeActivityContext{input: transcriptionResult{TaskId: "part1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := first.([]storyteller.Line)[1]; *l.Start != 12 || *l.End != 15 {
+		t.Errorf("first part: expected 12-15, got %v-%v", *l.Start, *l.End)
+	}
+
+	second, err := FetchTranscription(&fakeActivityContext{input: transcriptionResult{
+		TaskId: "part2", PreviousTaskIds: []string{"part1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := second.([]storyteller.Line)[0]; *l.Start != 3601.5 || *l.End != 3604.5 {
+		t.Errorf("second part: expected 3601.5-3604.5, got %v-%v", *l.Start, *l.End)
+	}
+
+	// An earlier part whisper cannot measure: no times rather than wrong ones.
+	unknown, err := FetchTranscription(&fakeActivityContext{input: transcriptionResult{
+		TaskId: "part3", PreviousTaskIds: []string{"part1", "gone"}}})
+	if err != nil {
+		t.Fatalf("a missing length must not fail the transcription: %v", err)
+	}
+	if l := unknown.([]storyteller.Line)[0]; l.Start != nil || l.Text == "" {
+		t.Errorf("expected the line without times, got %+v", l)
+	}
+}
+
 // Every recording cooked before the timeline existed has none, and the raw
 // records it is derived from are long deleted. Those must still transcribe.
 func TestFetchTranscriptionFallsBackToDiarization(t *testing.T) {
@@ -346,6 +395,10 @@ func (m *mockAgent) SummarizeCampaign(_ context.Context, _, _ string) (string, e
 }
 
 func (m *mockAgent) Gist(_ context.Context, _, _, _ string) (string, error) { return "Gist.", nil }
+
+func (m *mockAgent) Chapters(_ context.Context, _, _, _ string, _ []storyteller.Line) (string, error) {
+	return "[]", nil
+}
 
 func (m *mockAgent) DraftCast(_ context.Context, _ string, transcripts []json.RawMessage, cast string) (string, error) {
 	m.castTranscripts = transcripts

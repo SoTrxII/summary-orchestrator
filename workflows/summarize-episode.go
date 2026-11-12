@@ -95,7 +95,7 @@ func summarize(ctx *workflow.WorkflowContext, in EpisodeInput, log func(string))
 			if i < len(keys) {
 				audioKey = keys[i]
 			}
-			chunk, err := collectTranscription(ctx, taskId, audioKey, in.GameMasterIds)
+			chunk, err := collectTranscription(ctx, taskId, audioKey, in.GameMasterIds, taskIds[:i])
 			if err != nil {
 				return nil, err
 			}
@@ -270,6 +270,7 @@ func summarize(ctx *workflow.WorkflowContext, in EpisodeInput, log func(string))
 			Summary:     gist,
 			EpisodeKey:  episodeKey,
 			CampaignKey: campaignKey,
+			JobId:       in.JobId,
 		}),
 		workflow.WithActivityRetryPolicy(transientRetry),
 	).Await(nil); err != nil {
@@ -330,7 +331,7 @@ func transcribeChunks(ctx *workflow.WorkflowContext, in EpisodeInput, keys []str
 			log(fmt.Sprintf("could not record %s on the whisper lease: %s", taskId, err))
 		}
 
-		chunk, err := collectTranscription(ctx, taskId, key, in.GameMasterIds)
+		chunk, err := collectTranscription(ctx, taskId, key, in.GameMasterIds, taskIds[:len(taskIds)-1])
 		if err != nil {
 			return nil, taskIds, err
 		}
@@ -340,13 +341,14 @@ func transcribeChunks(ctx *workflow.WorkflowContext, in EpisodeInput, keys []str
 }
 
 // collectTranscription waits for one whisper task and returns its lines.
-func collectTranscription(ctx *workflow.WorkflowContext, taskId, audioKey string, gameMasterIds []string) ([]storyteller.Line, error) {
+func collectTranscription(ctx *workflow.WorkflowContext, taskId, audioKey string, gameMasterIds, previousTaskIds []string) ([]storyteller.Line, error) {
 	var chunk []storyteller.Line
 	if err := ctx.CallActivity(FetchTranscription,
 		workflow.WithActivityInput(transcriptionResult{
-			TaskId:        taskId,
-			AudioKey:      audioKey,
-			GameMasterIds: gameMasterIds,
+			TaskId:          taskId,
+			AudioKey:        audioKey,
+			GameMasterIds:   gameMasterIds,
+			PreviousTaskIds: previousTaskIds,
 		}),
 		workflow.WithActivityRetryPolicy(transcriptionRetry),
 	).Await(&chunk); err != nil {

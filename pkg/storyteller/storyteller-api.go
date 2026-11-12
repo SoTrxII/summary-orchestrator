@@ -10,6 +10,11 @@ import (
 type Line struct {
 	Speaker string `json:"speaker"`
 	Text    string `json:"text"`
+	// Seconds into the session's video, where the line was said: what YouTube
+	// chapters are placed with. Pointers because 0 is a real time, and absent
+	// is what every transcript archived before 0.5.0 says.
+	Start *float64 `json:"start,omitempty"`
+	End   *float64 `json:"end,omitempty"`
 }
 
 // Storyteller is the Marlin A2A agent: it writes the narrative summaries and
@@ -34,6 +39,11 @@ type Storyteller interface {
 	SummarizeCampaign(ctx context.Context, campaignId string, cast string) (string, error)
 	// Gist condenses an episode summary into the short form shown in Discord.
 	Gist(ctx context.Context, campaignId, episodeId, summary string) (string, error)
+	// Chapters places the scenes of an episode's chapter on its video's clock:
+	// a JSON array of {start, title}, start in seconds, already within
+	// YouTube's rules, or "[]" when there is nothing to place. lines are the
+	// transcript's timed lines; lines without times are ignored.
+	Chapters(ctx context.Context, campaignId, episodeId, chapter string, lines []Line) (string, error)
 	// DraftCast counts a first-pass cast off the campaign's already-archived
 	// transcripts, for a human to correct afterward. Pure computation on the
 	// agent's side -- no model call, no graph -- so it costs nothing extra to

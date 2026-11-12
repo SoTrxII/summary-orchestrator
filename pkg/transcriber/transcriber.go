@@ -98,18 +98,41 @@ type taskResult struct {
 	Result struct {
 		Segments []Segment `json:"segments"`
 	} `json:"result"`
+	// metadata.duration is whisper's processing time, not the audio's (19,730 s
+	// for 29/12's 5,503 s): only audio_duration measures the recording.
+	Metadata struct {
+		AudioDuration float64 `json:"audio_duration"`
+	} `json:"metadata"`
+}
+
+func (w *WhisperX) task(ctx context.Context, taskId string) (taskResult, error) {
+	var parsed taskResult
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/task/%s", w.cfg.BaseUrl, taskId), nil)
+	if err != nil {
+		return parsed, err
+	}
+	w.authorize(req)
+	if err := w.do(req, &parsed); err != nil {
+		return parsed, fmt.Errorf("polling task %s: %w", taskId, err)
+	}
+	return parsed, nil
+}
+
+func (w *WhisperX) AudioDuration(ctx context.Context, taskId string) (float64, error) {
+	parsed, err := w.task(ctx, taskId)
+	if err != nil {
+		return 0, err
+	}
+	if parsed.Metadata.AudioDuration <= 0 {
+		return 0, fmt.Errorf("task %s reports no audio duration", taskId)
+	}
+	return parsed.Metadata.AudioDuration, nil
 }
 
 func (w *WhisperX) Result(ctx context.Context, taskId string) ([]Segment, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/task/%s", w.cfg.BaseUrl, taskId), nil)
+	parsed, err := w.task(ctx, taskId)
 	if err != nil {
 		return nil, err
-	}
-	w.authorize(req)
-
-	var parsed taskResult
-	if err := w.do(req, &parsed); err != nil {
-		return nil, fmt.Errorf("polling task %s: %w", taskId, err)
 	}
 
 	switch parsed.Status {

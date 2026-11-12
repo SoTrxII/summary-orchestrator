@@ -63,13 +63,14 @@ func main() {
 	}, &http.Client{Timeout: whisperTimeout})
 
 	summaries := summary_store.New(cfg.SummaryStore, daprClient)
+	agent := storyteller.New(cfg.AgentEndpoint(), cfg.GatewayKey, cfg.StorytellerAgent, cfg.StorytellerViaGateway, &http.Client{Timeout: agentTimeout})
 
 	registry := workflow.NewRegistry()
 	err = workflows.Register(registry, workflows.Deps{
 		Audio:        audio_store.New(cfg.ObjectStore, cfg.PresignTTL, daprClient),
 		Transcriber:  whisper,
 		Whisper:      whisper_lease.New(cfg.StateStore, daprClient, whisper.Status),
-		Agent:        storyteller.New(cfg.AgentEndpoint(), cfg.GatewayKey, cfg.StorytellerAgent, cfg.StorytellerViaGateway, &http.Client{Timeout: agentTimeout}),
+		Agent:        agent,
 		Summaries:    summaries,
 		Publisher:    daprClient,
 		PubSubName:   cfg.PubSub,
@@ -91,7 +92,9 @@ func main() {
 	slog.Info("[Main] :: workflow worker started")
 
 	r := gin.Default()
-	api.NewController(wfClient, summaries).Register(r)
+	// The chapters reuse the workflow's agent client and its 30 min timeout: a
+	// chapter list is one model call, well inside it.
+	api.NewController(wfClient, summaries, &api.ChapterService{Agent: agent, Store: summaries}).Register(r)
 
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.AppPort),
